@@ -1,2 +1,2 @@
 # Peridotite
-Backend for the Celestite chat application made with go
+Backend for the Zentra chat application made with go
