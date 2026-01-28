@@ -59,19 +59,13 @@ func ConnectMinIO(cfg *config.Config) (*minio.Client, error) {
 			"Version": "2012-10-17",
 			"Statement": [
 				{
-					"Action": ["s3:GetBucketLocation", "s3:ListBucket"],
-					"Effect": "Allow",
-					"Principal": "*",
-					"Resource": ["arn:aws:s3:::%s"]
-				},
-				{
 					"Action": ["s3:GetObject"],
 					"Effect": "Allow",
 					"Principal": "*",
 					"Resource": ["arn:aws:s3:::%s/*"]
 				}
 			]
-		}`, bucket, bucket)
+		}`, bucket)
 		err = client.SetBucketPolicy(ctx, bucket, policy)
 		if err != nil {
 			log.Warn().Err(err).Str("bucket", bucket).Msg("Failed to set public policy on bucket")

@@ -126,7 +126,7 @@ func (s *Service) UploadAttachment(ctx context.Context, userID uuid.UUID, file m
 	// Generate unique filename
 	ext := filepath.Ext(header.Filename)
 	attachmentID := uuid.New()
-	objectName := fmt.Sprintf("%s/%s%s", userID.String(), attachmentID.String(), ext)
+	objectName := fmt.Sprintf("%s%s", attachmentID.String(), ext)
 
 	// Upload to MinIO
 	_, err = s.minio.PutObject(ctx, s.bucketAttachments, objectName, bytes.NewReader(fileData), int64(len(fileData)),
@@ -213,7 +213,7 @@ func (s *Service) UploadAvatar(ctx context.Context, ownerID uuid.UUID, ownerType
 		ext = ".jpg"
 	}
 
-	objectName := fmt.Sprintf("%s/%s%s", ownerType, ownerID.String(), ext)
+	objectName := fmt.Sprintf("%s%s", ownerID.String(), ext)
 
 	// Upload to MinIO
 	_, err = s.minio.PutObject(ctx, s.bucketAvatars, objectName, bytes.NewReader(processedData), int64(len(processedData)),
@@ -245,7 +245,7 @@ func (s *Service) UploadCommunityAsset(ctx context.Context, communityID uuid.UUI
 	}
 
 	ext := filepath.Ext(header.Filename)
-	objectName := fmt.Sprintf("%s/%s%s", communityID.String(), assetType, ext)
+	objectName := fmt.Sprintf("%s-%s%s", communityID.String(), assetType, ext)
 
 	_, err = s.minio.PutObject(ctx, s.bucketCommunity, objectName, bytes.NewReader(fileData), int64(len(fileData)),
 		minio.PutObjectOptions{
@@ -258,14 +258,22 @@ func (s *Service) UploadCommunityAsset(ctx context.Context, communityID uuid.UUI
 	return s.getPublicURL(s.bucketCommunity, objectName), nil
 }
 
-// getPublicURL constructs a public URL for an object, handling potential bucket name duplication in cdnBaseURL
+// getPublicURL constructs a public URL for an object
 func (s *Service) getPublicURL(bucket, objectName string) string {
 	baseURL := strings.TrimSuffix(s.cdnBaseURL, "/")
 
-	// If the baseURL already ends with /bucket, don't append it again
-	bucketSuffix := "/" + bucket
-	if strings.HasSuffix(baseURL, bucketSuffix) {
-		return fmt.Sprintf("%s/%s", baseURL, objectName)
+	// If the baseURL already contains a bucket (legacy or misconfig),
+	// we try to extract only the base host part to avoid "bucket-in-bucket" URLs
+	// but strictly speaking, it should just be host:port
+
+	// A more robust way: if cdnBaseURL contains any of our bucket names,
+	// strip them to get the true base URL
+	for _, b := range []string{s.bucketAttachments, s.bucketAvatars, s.bucketCommunity} {
+		suffix := "/" + b
+		if strings.HasSuffix(baseURL, suffix) {
+			baseURL = strings.TrimSuffix(baseURL, suffix)
+			break
+		}
 	}
 
 	return fmt.Sprintf("%s/%s/%s", baseURL, bucket, objectName)
@@ -275,15 +283,17 @@ func (s *Service) getPublicURL(bucket, objectName string) string {
 func (s *Service) trimURLToObjectName(fileURL, bucket string) string {
 	baseURL := strings.TrimSuffix(s.cdnBaseURL, "/")
 
-	// Try removing the double-bucket prefix first
-	doublePrefix := fmt.Sprintf("%s/%s/%s/", baseURL, bucket, bucket)
-	if strings.HasPrefix(fileURL, doublePrefix) {
-		return strings.TrimPrefix(fileURL, doublePrefix)
+	// Clean baseURL similarly to getPublicURL for consistency
+	for _, b := range []string{s.bucketAttachments, s.bucketAvatars, s.bucketCommunity} {
+		suffix := "/" + b
+		if strings.HasSuffix(baseURL, suffix) {
+			baseURL = strings.TrimSuffix(baseURL, suffix)
+			break
+		}
 	}
 
-	// Try removing the single-bucket prefix
-	singlePrefix := fmt.Sprintf("%s/%s/", baseURL, bucket)
-	return strings.TrimPrefix(fileURL, singlePrefix)
+	prefix := fmt.Sprintf("%s/%s/", baseURL, bucket)
+	return strings.TrimPrefix(fileURL, prefix)
 }
 
 // GetAttachment retrieves attachment metadata
@@ -392,7 +402,7 @@ func (s *Service) generateThumbnail(ctx context.Context, imageData []byte, attac
 		return "", err
 	}
 
-	thumbObjectName := fmt.Sprintf("%s/thumbs/%s_thumb.jpg", userID.String(), attachmentID.String())
+	thumbObjectName := fmt.Sprintf("%s_thumb.jpg", attachmentID.String())
 
 	_, err = s.minio.PutObject(ctx, s.bucketAttachments, thumbObjectName, &buf, int64(buf.Len()),
 		minio.PutObjectOptions{

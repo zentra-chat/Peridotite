@@ -28,7 +28,6 @@ type Config struct {
 		AccessKey         string
 		SecretKey         string
 		UseSSL            bool
-		Bucket            string // Legacy/Default
 		BucketAttachments string
 		BucketAvatars     string
 		BucketCommunity   string
@@ -92,7 +91,6 @@ func Load() (*Config, error) {
 	cfg.Storage.BucketAvatars = getEnv("MINIO_BUCKET_AVATARS", "avatars")
 	cfg.Storage.BucketCommunity = getEnv("MINIO_BUCKET_COMMUNITY", "community-assets")
 	cfg.Storage.CDNBaseURL = getEnv("CDN_BASE_URL", "http://localhost:9000")
-	cfg.Storage.Bucket = cfg.Storage.BucketAttachments // For backward compatibility
 
 	// JWT
 	cfg.JWT.Secret = getEnv("JWT_SECRET", "your-super-secret-jwt-key-change-in-production")

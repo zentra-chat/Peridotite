@@ -11,7 +11,8 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/01-init-db.sql:ro
+      - ./migrations/000001_initial_schema.up.sql:/docker-entrypoint-initdb.d/02-schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U zentra -d zentra"]
       interval: 10s
@@ -65,6 +66,7 @@ services:
       mc mb --ignore-existing zentra/attachments;
       mc mb --ignore-existing zentra/community-assets;
       mc anonymous set download zentra/avatars;
+      mc anonymous set download zentra/attachments;
       mc anonymous set download zentra/community-assets;
       exit 0;
       "
