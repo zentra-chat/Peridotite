@@ -127,6 +127,7 @@ func main() {
 
 		// Public routes
 		r.Mount("/auth", authHandler.Routes())
+		r.Mount("/communities", communityHandler.Routes(cfg.JWT.Secret))
 
 		// Protected routes
 		r.Group(func(r chi.Router) {
@@ -136,7 +137,6 @@ func main() {
 			r.Use(middleware.RateLimitMiddleware(redisClient, cfg.Server.RateLimitRPS))
 
 			r.Mount("/users", userHandler.Routes())
-			r.Mount("/communities", communityHandler.Routes())
 			r.Mount("/channels", channelHandler.Routes())
 			r.Mount("/messages", messageHandler.Routes())
 			r.Mount("/media", mediaHandler.Routes())

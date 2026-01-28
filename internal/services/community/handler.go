@@ -20,7 +20,7 @@ func NewHandler(service *Service) *Handler {
 	return &Handler{service: service}
 }
 
-func (h *Handler) Routes() chi.Router {
+func (h *Handler) Routes(secret string) chi.Router {
 	r := chi.NewRouter()
 
 	// Public routes (for discovery)
@@ -29,6 +29,7 @@ func (h *Handler) Routes() chi.Router {
 
 	// Authenticated routes
 	r.Group(func(r chi.Router) {
+		r.Use(middleware.AuthMiddleware(secret))
 
 		r.Post("/", h.CreateCommunity)
 		r.Get("/", h.GetUserCommunities)
