@@ -37,7 +37,9 @@ func ConnectMinIO(cfg *config.Config) (*minio.Client, error) {
 	defer cancel()
 
 	buckets := []string{
-		cfg.Storage.Bucket,
+		cfg.Storage.BucketAttachments,
+		cfg.Storage.BucketAvatars,
+		cfg.Storage.BucketCommunity,
 	}
 
 	for _, bucket := range buckets {
@@ -50,6 +52,29 @@ func ConnectMinIO(cfg *config.Config) (*minio.Client, error) {
 				return nil, fmt.Errorf("failed to create bucket %s: %w", bucket, err)
 			}
 			log.Info().Str("bucket", bucket).Msg("Created MinIO bucket")
+		}
+
+		// Set public-read policy for all buckets by default for CDN access
+		policy := fmt.Sprintf(`{
+			"Version": "2012-10-17",
+			"Statement": [
+				{
+					"Action": ["s3:GetBucketLocation", "s3:ListBucket"],
+					"Effect": "Allow",
+					"Principal": "*",
+					"Resource": ["arn:aws:s3:::%s"]
+				},
+				{
+					"Action": ["s3:GetObject"],
+					"Effect": "Allow",
+					"Principal": "*",
+					"Resource": ["arn:aws:s3:::%s/*"]
+				}
+			]
+		}`, bucket, bucket)
+		err = client.SetBucketPolicy(ctx, bucket, policy)
+		if err != nil {
+			log.Warn().Err(err).Str("bucket", bucket).Msg("Failed to set public policy on bucket")
 		}
 	}
 

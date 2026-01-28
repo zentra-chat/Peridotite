@@ -76,7 +76,7 @@ func main() {
 	communityService := community.NewService(db)
 	channelService := channel.NewService(db, communityService)
 	messageService := message.NewService(db, redisClient, encKey, channelService)
-	mediaService := media.NewService(db, minioClient, cfg.Storage.Bucket, cfg.Storage.CDNBaseURL, communityService)
+	mediaService := media.NewService(db, minioClient, [3]string{cfg.Storage.BucketAttachments, cfg.Storage.BucketAvatars, cfg.Storage.BucketCommunity}, cfg.Storage.CDNBaseURL, communityService)
 
 	// Initialize WebSocket hub
 	wsHub := websocket.NewHub(redisClient, channelService, userService)

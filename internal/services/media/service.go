@@ -70,27 +70,31 @@ var (
 )
 
 type Service struct {
-	db               *pgxpool.Pool
-	minio            *minio.Client
-	bucketName       string
-	cdnBaseURL       string
-	communityService *community.Service
+	db                *pgxpool.Pool
+	minio             *minio.Client
+	bucketAttachments string
+	bucketAvatars     string
+	bucketCommunity   string
+	cdnBaseURL        string
+	communityService  *community.Service
 }
 
-func NewService(db *pgxpool.Pool, minioClient *minio.Client, bucketName, cdnBaseURL string, communityService *community.Service) *Service {
+func NewService(db *pgxpool.Pool, minioClient *minio.Client, buckets [3]string, cdnBaseURL string, communityService *community.Service) *Service {
 	return &Service{
-		db:               db,
-		minio:            minioClient,
-		bucketName:       bucketName,
-		cdnBaseURL:       cdnBaseURL,
-		communityService: communityService,
+		db:                db,
+		minio:             minioClient,
+		bucketAttachments: buckets[0],
+		bucketAvatars:     buckets[1],
+		bucketCommunity:   buckets[2],
+		cdnBaseURL:        cdnBaseURL,
+		communityService:  communityService,
 	}
 }
 
 type UploadResult struct {
 	ID           uuid.UUID `json:"id"`
 	Filename     string    `json:"filename"`
-	ContentType  string    `json:"mimeType"`
+	ContentType  string    `json:"contentType"`
 	Size         int64     `json:"size"`
 	URL          string    `json:"url"`
 	ThumbnailURL *string   `json:"thumbnailUrl,omitempty"`
@@ -122,10 +126,10 @@ func (s *Service) UploadAttachment(ctx context.Context, userID uuid.UUID, file m
 	// Generate unique filename
 	ext := filepath.Ext(header.Filename)
 	attachmentID := uuid.New()
-	objectName := fmt.Sprintf("attachments/%s/%s%s", userID.String(), attachmentID.String(), ext)
+	objectName := fmt.Sprintf("%s/%s%s", userID.String(), attachmentID.String(), ext)
 
 	// Upload to MinIO
-	_, err = s.minio.PutObject(ctx, s.bucketName, objectName, bytes.NewReader(fileData), int64(len(fileData)),
+	_, err = s.minio.PutObject(ctx, s.bucketAttachments, objectName, bytes.NewReader(fileData), int64(len(fileData)),
 		minio.PutObjectOptions{
 			ContentType: contentType,
 		})
@@ -133,7 +137,7 @@ func (s *Service) UploadAttachment(ctx context.Context, userID uuid.UUID, file m
 		return nil, fmt.Errorf("failed to upload file: %w", err)
 	}
 
-	fileURL := fmt.Sprintf("%s/%s/%s", s.cdnBaseURL, s.bucketName, objectName)
+	fileURL := s.getPublicURL(s.bucketAttachments, objectName)
 
 	// Generate thumbnail for images
 	var thumbnailURL *string
@@ -168,7 +172,7 @@ func (s *Service) UploadAttachment(ctx context.Context, userID uuid.UUID, file m
 	)
 	if err != nil {
 		// Cleanup uploaded file
-		s.minio.RemoveObject(ctx, s.bucketName, objectName, minio.RemoveObjectOptions{})
+		s.minio.RemoveObject(ctx, s.bucketAttachments, objectName, minio.RemoveObjectOptions{})
 		return nil, fmt.Errorf("failed to save attachment record: %w", err)
 	}
 
@@ -209,10 +213,10 @@ func (s *Service) UploadAvatar(ctx context.Context, ownerID uuid.UUID, ownerType
 		ext = ".jpg"
 	}
 
-	objectName := fmt.Sprintf("avatars/%s/%s%s", ownerType, ownerID.String(), ext)
+	objectName := fmt.Sprintf("%s/%s%s", ownerType, ownerID.String(), ext)
 
 	// Upload to MinIO
-	_, err = s.minio.PutObject(ctx, s.bucketName, objectName, bytes.NewReader(processedData), int64(len(processedData)),
+	_, err = s.minio.PutObject(ctx, s.bucketAvatars, objectName, bytes.NewReader(processedData), int64(len(processedData)),
 		minio.PutObjectOptions{
 			ContentType: "image/jpeg",
 		})
@@ -220,7 +224,7 @@ func (s *Service) UploadAvatar(ctx context.Context, ownerID uuid.UUID, ownerType
 		return "", fmt.Errorf("failed to upload avatar: %w", err)
 	}
 
-	return fmt.Sprintf("%s/%s/%s", s.cdnBaseURL, s.bucketName, objectName), nil
+	return s.getPublicURL(s.bucketAvatars, objectName), nil
 }
 
 // UploadCommunityAsset handles community banner/icon uploads
@@ -241,9 +245,9 @@ func (s *Service) UploadCommunityAsset(ctx context.Context, communityID uuid.UUI
 	}
 
 	ext := filepath.Ext(header.Filename)
-	objectName := fmt.Sprintf("communities/%s/%s%s", communityID.String(), assetType, ext)
+	objectName := fmt.Sprintf("%s/%s%s", communityID.String(), assetType, ext)
 
-	_, err = s.minio.PutObject(ctx, s.bucketName, objectName, bytes.NewReader(fileData), int64(len(fileData)),
+	_, err = s.minio.PutObject(ctx, s.bucketCommunity, objectName, bytes.NewReader(fileData), int64(len(fileData)),
 		minio.PutObjectOptions{
 			ContentType: contentType,
 		})
@@ -251,7 +255,35 @@ func (s *Service) UploadCommunityAsset(ctx context.Context, communityID uuid.UUI
 		return "", fmt.Errorf("failed to upload asset: %w", err)
 	}
 
-	return fmt.Sprintf("%s/%s/%s", s.cdnBaseURL, s.bucketName, objectName), nil
+	return s.getPublicURL(s.bucketCommunity, objectName), nil
+}
+
+// getPublicURL constructs a public URL for an object, handling potential bucket name duplication in cdnBaseURL
+func (s *Service) getPublicURL(bucket, objectName string) string {
+	baseURL := strings.TrimSuffix(s.cdnBaseURL, "/")
+
+	// If the baseURL already ends with /bucket, don't append it again
+	bucketSuffix := "/" + bucket
+	if strings.HasSuffix(baseURL, bucketSuffix) {
+		return fmt.Sprintf("%s/%s", baseURL, objectName)
+	}
+
+	return fmt.Sprintf("%s/%s/%s", baseURL, bucket, objectName)
+}
+
+// trimURLToObjectName removes the CDN and bucket prefix from a URL to get the MinIO object key
+func (s *Service) trimURLToObjectName(fileURL, bucket string) string {
+	baseURL := strings.TrimSuffix(s.cdnBaseURL, "/")
+
+	// Try removing the double-bucket prefix first
+	doublePrefix := fmt.Sprintf("%s/%s/%s/", baseURL, bucket, bucket)
+	if strings.HasPrefix(fileURL, doublePrefix) {
+		return strings.TrimPrefix(fileURL, doublePrefix)
+	}
+
+	// Try removing the single-bucket prefix
+	singlePrefix := fmt.Sprintf("%s/%s/", baseURL, bucket)
+	return strings.TrimPrefix(fileURL, singlePrefix)
 }
 
 // GetAttachment retrieves attachment metadata
@@ -295,13 +327,13 @@ func (s *Service) DeleteAttachment(ctx context.Context, attachmentID, userID uui
 	}
 
 	// Delete from MinIO
-	objectName := strings.TrimPrefix(attachment.FileURL, fmt.Sprintf("%s/%s/", s.cdnBaseURL, s.bucketName))
-	s.minio.RemoveObject(ctx, s.bucketName, objectName, minio.RemoveObjectOptions{})
+	objectName := s.trimURLToObjectName(attachment.FileURL, s.bucketAttachments)
+	s.minio.RemoveObject(ctx, s.bucketAttachments, objectName, minio.RemoveObjectOptions{})
 
 	// Delete thumbnail if exists
 	if attachment.ThumbnailURL != nil {
-		thumbObjectName := strings.TrimPrefix(*attachment.ThumbnailURL, fmt.Sprintf("%s/%s/", s.cdnBaseURL, s.bucketName))
-		s.minio.RemoveObject(ctx, s.bucketName, thumbObjectName, minio.RemoveObjectOptions{})
+		thumbObjectName := s.trimURLToObjectName(*attachment.ThumbnailURL, s.bucketAttachments)
+		s.minio.RemoveObject(ctx, s.bucketAttachments, thumbObjectName, minio.RemoveObjectOptions{})
 	}
 
 	return nil
@@ -314,9 +346,9 @@ func (s *Service) GetPresignedURL(ctx context.Context, attachmentID uuid.UUID, e
 		return "", err
 	}
 
-	objectName := strings.TrimPrefix(attachment.FileURL, fmt.Sprintf("%s/%s/", s.cdnBaseURL, s.bucketName))
+	objectName := s.trimURLToObjectName(attachment.FileURL, s.bucketAttachments)
 
-	presignedURL, err := s.minio.PresignedGetObject(ctx, s.bucketName, objectName, expiry, nil)
+	presignedURL, err := s.minio.PresignedGetObject(ctx, s.bucketAttachments, objectName, expiry, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate presigned URL: %w", err)
 	}
@@ -360,9 +392,9 @@ func (s *Service) generateThumbnail(ctx context.Context, imageData []byte, attac
 		return "", err
 	}
 
-	thumbObjectName := fmt.Sprintf("attachments/%s/thumbs/%s_thumb.jpg", userID.String(), attachmentID.String())
+	thumbObjectName := fmt.Sprintf("%s/thumbs/%s_thumb.jpg", userID.String(), attachmentID.String())
 
-	_, err = s.minio.PutObject(ctx, s.bucketName, thumbObjectName, &buf, int64(buf.Len()),
+	_, err = s.minio.PutObject(ctx, s.bucketAttachments, thumbObjectName, &buf, int64(buf.Len()),
 		minio.PutObjectOptions{
 			ContentType: "image/jpeg",
 		})
@@ -370,7 +402,7 @@ func (s *Service) generateThumbnail(ctx context.Context, imageData []byte, attac
 		return "", err
 	}
 
-	return fmt.Sprintf("%s/%s/%s", s.cdnBaseURL, s.bucketName, thumbObjectName), nil
+	return s.getPublicURL(s.bucketAttachments, thumbObjectName), nil
 }
 
 func (s *Service) processAvatar(imageData []byte) ([]byte, error) {

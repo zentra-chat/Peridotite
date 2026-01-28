@@ -97,7 +97,7 @@ def test_api():
     assert resp.status_code == 200, f"Get messages failed: {resp.text}"
     messages = resp.json()["data"]
     assert len(messages) >= 1
-    message_id = messages[0]["id"]
+    message_id = messages[0]["id"] 
     print(f"SUCCESS: Retrieved {len(messages)} messages")
 
     # 8. Add Reaction

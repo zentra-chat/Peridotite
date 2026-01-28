@@ -37,7 +37,7 @@ type MessageAttachment struct {
 	Filename         string     `json:"filename" db:"filename"`
 	FileURL          string     `json:"url" db:"file_url"`
 	FileSize         int64      `json:"size" db:"file_size"`
-	ContentType      *string    `json:"mimeType,omitempty" db:"content_type"`
+	ContentType      *string    `json:"contentType,omitempty" db:"content_type"`
 	ThumbnailURL     *string    `json:"thumbnailUrl,omitempty" db:"thumbnail_url"`
 	Width            *int       `json:"width,omitempty" db:"width"`
 	Height           *int       `json:"height,omitempty" db:"height"`

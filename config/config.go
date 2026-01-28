@@ -24,12 +24,15 @@ type Config struct {
 		URL string
 	}
 	Storage struct {
-		Endpoint   string
-		AccessKey  string
-		SecretKey  string
-		UseSSL     bool
-		Bucket     string
-		CDNBaseURL string
+		Endpoint          string
+		AccessKey         string
+		SecretKey         string
+		UseSSL            bool
+		Bucket            string // Legacy/Default
+		BucketAttachments string
+		BucketAvatars     string
+		BucketCommunity   string
+		CDNBaseURL        string
 	}
 	JWT struct {
 		Secret     string
@@ -85,8 +88,11 @@ func Load() (*Config, error) {
 	cfg.Storage.AccessKey = getEnv("MINIO_ACCESS_KEY", "zentra_minio")
 	cfg.Storage.SecretKey = getEnv("MINIO_SECRET_KEY", "zentra_minio_secret")
 	cfg.Storage.UseSSL = getEnvBool("MINIO_USE_SSL", false)
-	cfg.Storage.Bucket = getEnv("MINIO_BUCKET_ATTACHMENTS", "attachments")
+	cfg.Storage.BucketAttachments = getEnv("MINIO_BUCKET_ATTACHMENTS", "attachments")
+	cfg.Storage.BucketAvatars = getEnv("MINIO_BUCKET_AVATARS", "avatars")
+	cfg.Storage.BucketCommunity = getEnv("MINIO_BUCKET_COMMUNITY", "community-assets")
 	cfg.Storage.CDNBaseURL = getEnv("CDN_BASE_URL", "http://localhost:9000")
+	cfg.Storage.Bucket = cfg.Storage.BucketAttachments // For backward compatibility
 
 	// JWT
 	cfg.JWT.Secret = getEnv("JWT_SECRET", "your-super-secret-jwt-key-change-in-production")

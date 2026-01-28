@@ -73,9 +73,10 @@ type MessageReplyPreview struct {
 }
 
 type ReactionSummary struct {
-	Emoji string      `json:"emoji"`
-	Count int         `json:"count"`
-	Users []uuid.UUID `json:"users"`
+	Emoji   string      `json:"emoji"`
+	Count   int         `json:"count"`
+	Users   []uuid.UUID `json:"users"`
+	Reacted bool        `json:"reacted"`
 }
 
 type GetMessagesParams struct {
@@ -251,10 +252,18 @@ func (s *Service) GetMessage(ctx context.Context, messageID, userID uuid.UUID) (
 	response.Reactions = make([]ReactionSummary, 0)
 	for emoji, users := range msg.Reactions {
 		if len(users) > 0 {
+			reacted := false
+			for _, u := range users {
+				if u == userID {
+					reacted = true
+					break
+				}
+			}
 			response.Reactions = append(response.Reactions, ReactionSummary{
-				Emoji: emoji,
-				Count: len(users),
-				Users: users,
+				Emoji:   emoji,
+				Count:   len(users),
+				Users:   users,
+				Reacted: reacted,
 			})
 		}
 	}
@@ -371,10 +380,18 @@ func (s *Service) GetChannelMessages(ctx context.Context, channelID, userID uuid
 			m.Reactions = make([]ReactionSummary, 0)
 			for emoji, users := range m.Message.Reactions {
 				if len(users) > 0 {
+					reacted := false
+					for _, u := range users {
+						if u == userID {
+							reacted = true
+							break
+						}
+					}
 					m.Reactions = append(m.Reactions, ReactionSummary{
-						Emoji: emoji,
-						Count: len(users),
-						Users: users,
+						Emoji:   emoji,
+						Count:   len(users),
+						Users:   users,
+						Reacted: reacted,
 					})
 				}
 			}
