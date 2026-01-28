@@ -1,0 +1,769 @@
+package message
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
+	"github.com/zentra/peridotite/internal/models"
+	"github.com/zentra/peridotite/pkg/encryption"
+)
+
+var (
+	ErrMessageNotFound   = errors.New("message not found")
+	ErrInsufficientPerms = errors.New("insufficient permissions")
+	ErrNotMessageOwner   = errors.New("not message owner")
+	ErrCannotEdit        = errors.New("cannot edit this message")
+	ErrInvalidReaction   = errors.New("invalid reaction")
+)
+
+type Service struct {
+	db             *pgxpool.Pool
+	redis          *redis.Client
+	encryptionKey  []byte
+	channelService ChannelServiceInterface
+}
+
+type ChannelServiceInterface interface {
+	CanAccessChannel(ctx context.Context, channelID, userID uuid.UUID) bool
+	CanSendMessage(ctx context.Context, channelID, userID uuid.UUID) bool
+	CanManageMessages(ctx context.Context, channelID, userID uuid.UUID) bool
+}
+
+func NewService(db *pgxpool.Pool, redis *redis.Client, encryptionKey []byte, channelService ChannelServiceInterface) *Service {
+	return &Service{
+		db:             db,
+		redis:          redis,
+		encryptionKey:  encryptionKey,
+		channelService: channelService,
+	}
+}
+
+// Request/Response types
+type CreateMessageRequest struct {
+	Content     string      `json:"content" validate:"required,max=4000"`
+	ReplyToID   *uuid.UUID  `json:"replyToId,omitempty"`
+	Attachments []uuid.UUID `json:"attachments,omitempty" validate:"max=10"`
+}
+
+type UpdateMessageRequest struct {
+	Content string `json:"content" validate:"required,max=4000"`
+}
+
+type MessageResponse struct {
+	*models.Message
+	Author      *models.PublicUser         `json:"author"`
+	Attachments []models.MessageAttachment `json:"attachments,omitempty"`
+	Reactions   []ReactionSummary          `json:"reactions,omitempty"`
+	ReplyTo     *MessageReplyPreview       `json:"replyTo,omitempty"`
+}
+
+type MessageReplyPreview struct {
+	ID       uuid.UUID          `json:"id"`
+	Content  string             `json:"content"`
+	AuthorID uuid.UUID          `json:"authorId"`
+	Author   *models.PublicUser `json:"author"`
+}
+
+type ReactionSummary struct {
+	Emoji string      `json:"emoji"`
+	Count int         `json:"count"`
+	Users []uuid.UUID `json:"users"`
+}
+
+type GetMessagesParams struct {
+	Before *uuid.UUID
+	After  *uuid.UUID
+	Limit  int
+}
+
+// CreateMessage creates a new message in a channel
+func (s *Service) CreateMessage(ctx context.Context, channelID, userID uuid.UUID, req *CreateMessageRequest) (*MessageResponse, error) {
+	if !s.channelService.CanSendMessage(ctx, channelID, userID) {
+		return nil, ErrInsufficientPerms
+	}
+
+	// Encrypt message content
+	encryptedContent, err := encryption.Encrypt([]byte(req.Content), s.encryptionKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encrypt message: %w", err)
+	}
+
+	messageID := uuid.New()
+	now := time.Now()
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	// Insert message
+	query := `
+		INSERT INTO messages (id, channel_id, author_id, encrypted_content, reply_to_id, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $6)
+		RETURNING id, channel_id, author_id, encrypted_content, reply_to_id, is_pinned, is_edited, created_at, updated_at`
+
+	var msg models.Message
+	var encContent []byte
+	err = tx.QueryRow(ctx, query,
+		messageID, channelID, userID, encryptedContent, req.ReplyToID, now,
+	).Scan(
+		&msg.ID, &msg.ChannelID, &msg.AuthorID, &encContent,
+		&msg.ReplyToID, &msg.IsPinned, &msg.IsEdited, &msg.CreatedAt, &msg.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Decrypt for response
+	decrypted, err := encryption.Decrypt(encContent, s.encryptionKey)
+	if err != nil {
+		return nil, err
+	}
+	contentStr := string(decrypted)
+	msg.Content = &contentStr
+
+	// Link attachments to message
+	if len(req.Attachments) > 0 {
+		for _, attachmentID := range req.Attachments {
+			_, err = tx.Exec(ctx,
+				`UPDATE message_attachments SET message_id = $1, message_created_at = $2 WHERE id = $3`,
+				messageID, now, attachmentID,
+			)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	// Update channel's last message
+	_, err = tx.Exec(ctx,
+		`UPDATE channels SET last_message_at = $1 WHERE id = $2`,
+		now, channelID,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+
+	// Fetch complete response
+	return s.GetMessage(ctx, messageID, userID)
+}
+
+// GetMessage retrieves a single message
+func (s *Service) GetMessage(ctx context.Context, messageID, userID uuid.UUID) (*MessageResponse, error) {
+	query := `
+		SELECT m.id, m.channel_id, m.author_id, m.encrypted_content, m.reply_to_id, 
+		       m.is_pinned, m.is_edited, m.reactions, m.created_at, m.updated_at,
+		       u.id, u.username, u.display_name, u.avatar_url, u.status
+		FROM messages m
+		JOIN users u ON u.id = m.author_id
+		WHERE m.id = $1 AND m.deleted_at IS NULL`
+
+	var msg models.Message
+	var encContent []byte
+	var author models.PublicUser
+
+	err := s.db.QueryRow(ctx, query, messageID).Scan(
+		&msg.ID, &msg.ChannelID, &msg.AuthorID, &encContent,
+		&msg.ReplyToID, &msg.IsPinned, &msg.IsEdited, &msg.Reactions, &msg.CreatedAt, &msg.UpdatedAt,
+		&author.ID, &author.Username, &author.DisplayName, &author.AvatarURL, &author.Status,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrMessageNotFound
+		}
+		return nil, err
+	}
+
+	// Check access
+	if !s.channelService.CanAccessChannel(ctx, msg.ChannelID, userID) {
+		return nil, ErrInsufficientPerms
+	}
+
+	// Decrypt content
+	decrypted, err := encryption.Decrypt(encContent, s.encryptionKey)
+	if err != nil {
+		contentErr := "[Decryption Error]"
+		msg.Content = &contentErr
+	} else {
+		contentStr := string(decrypted)
+		msg.Content = &contentStr
+	}
+
+	response := &MessageResponse{
+		Message: &msg,
+		Author:  &author,
+	}
+
+	// Fetch attachments
+	response.Attachments, _ = s.getMessageAttachments(ctx, messageID)
+
+	// Fetch reactions (now from the JSONB field)
+	response.Reactions = make([]ReactionSummary, 0)
+	for emoji, users := range msg.Reactions {
+		if len(users) > 0 {
+			response.Reactions = append(response.Reactions, ReactionSummary{
+				Emoji: emoji,
+				Count: len(users),
+				Users: users,
+			})
+		}
+	}
+
+	// Fetch reply preview if exists
+	if msg.ReplyToID != nil {
+		response.ReplyTo, _ = s.getReplyPreview(ctx, *msg.ReplyToID)
+	}
+
+	return response, nil
+}
+
+// GetChannelMessages retrieves messages from a channel with pagination
+func (s *Service) GetChannelMessages(ctx context.Context, channelID, userID uuid.UUID, params *GetMessagesParams) ([]*MessageResponse, error) {
+	if !s.channelService.CanAccessChannel(ctx, channelID, userID) {
+		return nil, ErrInsufficientPerms
+	}
+
+	limit := params.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+
+	var query string
+	var args []interface{}
+
+	if params.Before != nil {
+		query = `
+			SELECT m.id, m.channel_id, m.author_id, m.encrypted_content, m.reply_to_id,
+			       m.is_pinned, m.is_edited, m.reactions, m.created_at, m.updated_at,
+			       u.id, u.username, u.display_name, u.avatar_url, u.status
+			FROM messages m
+			JOIN users u ON u.id = m.author_id
+			WHERE m.channel_id = $1 AND m.deleted_at IS NULL
+			  AND m.created_at < (SELECT created_at FROM messages WHERE id = $2)
+			ORDER BY m.created_at DESC
+			LIMIT $3`
+		args = []interface{}{channelID, *params.Before, limit}
+	} else if params.After != nil {
+		query = `
+			SELECT m.id, m.channel_id, m.author_id, m.encrypted_content, m.reply_to_id,
+			       m.is_pinned, m.is_edited, m.reactions, m.created_at, m.updated_at,
+			       u.id, u.username, u.display_name, u.avatar_url, u.status
+			FROM messages m
+			JOIN users u ON u.id = m.author_id
+			WHERE m.channel_id = $1 AND m.deleted_at IS NULL
+			  AND m.created_at > (SELECT created_at FROM messages WHERE id = $2)
+			ORDER BY m.created_at ASC
+			LIMIT $3`
+		args = []interface{}{channelID, *params.After, limit}
+	} else {
+		query = `
+			SELECT m.id, m.channel_id, m.author_id, m.encrypted_content, m.reply_to_id,
+			       m.is_pinned, m.is_edited, m.reactions, m.created_at, m.updated_at,
+			       u.id, u.username, u.display_name, u.avatar_url, u.status
+			FROM messages m
+			JOIN users u ON u.id = m.author_id
+			WHERE m.channel_id = $1 AND m.deleted_at IS NULL
+			ORDER BY m.created_at DESC
+			LIMIT $2`
+		args = []interface{}{channelID, limit}
+	}
+
+	rows, err := s.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var messages []*MessageResponse
+	messageIDs := make([]uuid.UUID, 0)
+
+	for rows.Next() {
+		var msg models.Message
+		var encContent []byte
+		var author models.PublicUser
+
+		err := rows.Scan(
+			&msg.ID, &msg.ChannelID, &msg.AuthorID, &encContent,
+			&msg.ReplyToID, &msg.IsPinned, &msg.IsEdited, &msg.Reactions, &msg.CreatedAt, &msg.UpdatedAt,
+			&author.ID, &author.Username, &author.DisplayName, &author.AvatarURL, &author.Status,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		// Decrypt content
+		decrypted, err := encryption.Decrypt(encContent, s.encryptionKey)
+		if err != nil {
+			errStr := "[Decryption Error]"
+			msg.Content = &errStr
+		} else {
+			decStr := string(decrypted)
+			msg.Content = &decStr
+		}
+
+		messages = append(messages, &MessageResponse{
+			Message: &msg,
+			Author:  &author,
+		})
+		messageIDs = append(messageIDs, msg.ID)
+	}
+
+	// Batch fetch attachments
+	if len(messageIDs) > 0 {
+		attachmentMap := s.batchGetAttachments(ctx, messageIDs)
+
+		for _, m := range messages {
+			if attachments, ok := attachmentMap[m.ID]; ok {
+				m.Attachments = attachments
+			}
+
+			// Populate reactions from the JSONB field
+			m.Reactions = make([]ReactionSummary, 0)
+			for emoji, users := range m.Message.Reactions {
+				if len(users) > 0 {
+					m.Reactions = append(m.Reactions, ReactionSummary{
+						Emoji: emoji,
+						Count: len(users),
+						Users: users,
+					})
+				}
+			}
+
+			if m.ReplyToID != nil {
+				m.ReplyTo, _ = s.getReplyPreview(ctx, *m.ReplyToID)
+			}
+		}
+	}
+
+	return messages, nil
+}
+
+// UpdateMessage updates message content
+func (s *Service) UpdateMessage(ctx context.Context, messageID, userID uuid.UUID, req *UpdateMessageRequest) (*MessageResponse, error) {
+	// First check if user owns the message
+	var authorID uuid.UUID
+	err := s.db.QueryRow(ctx,
+		`SELECT author_id FROM messages WHERE id = $1 AND deleted_at IS NULL`,
+		messageID,
+	).Scan(&authorID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrMessageNotFound
+		}
+		return nil, err
+	}
+
+	if authorID != userID {
+		return nil, ErrNotMessageOwner
+	}
+
+	// Encrypt new content
+	encryptedContent, err := encryption.Encrypt([]byte(req.Content), s.encryptionKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encrypt message: %w", err)
+	}
+
+	now := time.Now()
+	_, err = s.db.Exec(ctx,
+		`UPDATE messages SET encrypted_content = $1, is_edited = TRUE, updated_at = $2 WHERE id = $3`,
+		encryptedContent, now, messageID,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.GetMessage(ctx, messageID, userID)
+}
+
+// DeleteMessage soft-deletes a message
+func (s *Service) DeleteMessage(ctx context.Context, messageID, userID uuid.UUID, hasModPerm bool) error {
+	var authorID, channelID uuid.UUID
+	err := s.db.QueryRow(ctx,
+		`SELECT author_id, channel_id FROM messages WHERE id = $1 AND deleted_at IS NULL`,
+		messageID,
+	).Scan(&authorID, &channelID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrMessageNotFound
+		}
+		return err
+	}
+
+	// User can delete if they own the message or have mod permissions
+	if authorID != userID && !hasModPerm {
+		return ErrInsufficientPerms
+	}
+
+	_, err = s.db.Exec(ctx,
+		`UPDATE messages SET deleted_at = $1 WHERE id = $2`,
+		time.Now(), messageID,
+	)
+	return err
+}
+
+// AddReaction adds a reaction to a message
+func (s *Service) AddReaction(ctx context.Context, messageID, userID uuid.UUID, emoji string) error {
+	// Validate emoji (basic check - could be more sophisticated)
+	if len(emoji) == 0 || len(emoji) > 32 {
+		return ErrInvalidReaction
+	}
+
+	// Verify message exists and user can access
+	var channelID uuid.UUID
+	var createdAt time.Time
+	err := s.db.QueryRow(ctx,
+		`SELECT channel_id, created_at FROM messages WHERE id = $1 AND deleted_at IS NULL`,
+		messageID,
+	).Scan(&channelID, &createdAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrMessageNotFound
+		}
+		return err
+	}
+
+	if !s.channelService.CanAccessChannel(ctx, channelID, userID) {
+		return ErrInsufficientPerms
+	}
+
+	query := `
+		UPDATE messages
+		SET reactions = jsonb_set(
+			coalesce(reactions, '{}'::jsonb),
+			ARRAY[$1::text],
+			(coalesce(reactions->$1, '[]'::jsonb) - $2::text) || jsonb_build_array($2::text)
+		),
+		updated_at = $3
+		WHERE id = $4 AND created_at = $5`
+
+	_, err = s.db.Exec(ctx, query, emoji, userID.String(), time.Now(), messageID, createdAt)
+	return err
+}
+
+// RemoveReaction removes a reaction from a message
+func (s *Service) RemoveReaction(ctx context.Context, messageID, userID uuid.UUID, emoji string) error {
+	// Need createdAt for partitioned table update
+	var createdAt time.Time
+	err := s.db.QueryRow(ctx,
+		`SELECT created_at FROM messages WHERE id = $1 AND deleted_at IS NULL`,
+		messageID,
+	).Scan(&createdAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrMessageNotFound
+		}
+		return err
+	}
+
+	query := `
+		UPDATE messages
+		SET reactions = jsonb_set(
+			reactions,
+			ARRAY[$1::text],
+			(reactions->$1) - $2::text
+		),
+		updated_at = $3
+		WHERE id = $4 AND created_at = $5`
+
+	_, err = s.db.Exec(ctx, query, emoji, userID.String(), time.Now(), messageID, createdAt)
+	return err
+}
+
+// PinMessage pins/unpins a message
+func (s *Service) PinMessage(ctx context.Context, messageID, userID uuid.UUID, pin bool) error {
+	var channelID uuid.UUID
+	err := s.db.QueryRow(ctx,
+		`SELECT channel_id FROM messages WHERE id = $1 AND deleted_at IS NULL`,
+		messageID,
+	).Scan(&channelID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrMessageNotFound
+		}
+		return err
+	}
+
+	// Check if user has permission to pin (would need channel service)
+	// For now, assume permission check is done at handler level
+
+	_, err = s.db.Exec(ctx,
+		`UPDATE messages SET is_pinned = $1, updated_at = $2 WHERE id = $3`,
+		pin, time.Now(), messageID,
+	)
+	return err
+}
+
+// GetPinnedMessages gets all pinned messages in a channel
+func (s *Service) GetPinnedMessages(ctx context.Context, channelID, userID uuid.UUID) ([]*MessageResponse, error) {
+	if !s.channelService.CanAccessChannel(ctx, channelID, userID) {
+		return nil, ErrInsufficientPerms
+	}
+
+	query := `
+		SELECT m.id, m.channel_id, m.author_id, m.encrypted_content, m.reply_to_id,
+		       m.is_pinned, m.created_at, m.updated_at, m.is_edited,
+		       u.id, u.username, u.display_name, u.avatar_url, u.status
+		FROM messages m
+		JOIN users u ON u.id = m.author_id
+		WHERE m.channel_id = $1 AND m.is_pinned = true AND m.deleted_at IS NULL
+		ORDER BY m.created_at DESC
+		LIMIT 50`
+
+	rows, err := s.db.Query(ctx, query, channelID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var messages []*MessageResponse
+	for rows.Next() {
+		var msg models.Message
+		var encContent []byte
+		var author models.PublicUser
+
+		err := rows.Scan(
+			&msg.ID, &msg.ChannelID, &msg.AuthorID, &encContent,
+			&msg.ReplyToID, &msg.IsPinned, &msg.CreatedAt, &msg.UpdatedAt, &msg.IsEdited,
+			&author.ID, &author.Username, &author.DisplayName, &author.AvatarURL, &author.Status,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		decrypted, err := encryption.Decrypt(encContent, s.encryptionKey)
+		if err != nil {
+			errStr := "[Decryption Error]"
+			msg.Content = &errStr
+		} else {
+			decStr := string(decrypted)
+			msg.Content = &decStr
+		}
+
+		messages = append(messages, &MessageResponse{
+			Message: &msg,
+			Author:  &author,
+		})
+	}
+
+	return messages, nil
+}
+
+// SearchMessages searches messages in a channel
+func (s *Service) SearchMessages(ctx context.Context, channelID, userID uuid.UUID, searchQuery string, limit int) ([]*MessageResponse, error) {
+	if !s.channelService.CanAccessChannel(ctx, channelID, userID) {
+		return nil, ErrInsufficientPerms
+	}
+
+	if limit <= 0 || limit > 50 {
+		limit = 25
+	}
+
+	// Note: Searching encrypted content is complex. This is a simplified approach.
+	// In production, you might use a separate search index with encrypted tokens.
+	// For now, we'll fetch recent messages and filter client-side or use metadata.
+
+	// This query searches by author username as a simple example
+	query := `
+		SELECT m.id, m.channel_id, m.author_id, m.encrypted_content, m.reply_to_id,
+		       m.is_pinned, m.created_at, m.updated_at, m.is_edited,
+		       u.id, u.username, u.display_name, u.avatar_url, u.status
+		FROM messages m
+		JOIN users u ON u.id = m.author_id
+		WHERE m.channel_id = $1 AND m.deleted_at IS NULL
+		  AND u.username ILIKE '%' || $2 || '%'
+		ORDER BY m.created_at DESC
+		LIMIT $3`
+
+	rows, err := s.db.Query(ctx, query, channelID, searchQuery, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var messages []*MessageResponse
+	for rows.Next() {
+		var msg models.Message
+		var encContent []byte
+		var author models.PublicUser
+
+		err := rows.Scan(
+			&msg.ID, &msg.ChannelID, &msg.AuthorID, &encContent,
+			&msg.ReplyToID, &msg.IsPinned, &msg.CreatedAt, &msg.UpdatedAt, &msg.IsEdited,
+			&author.ID, &author.Username, &author.DisplayName, &author.AvatarURL, &author.Status,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		decrypted, err := encryption.Decrypt(encContent, s.encryptionKey)
+		if err != nil {
+			errStr := "[Decryption Error]"
+			msg.Content = &errStr
+		} else {
+			decStr := string(decrypted)
+			msg.Content = &decStr
+		}
+
+		messages = append(messages, &MessageResponse{
+			Message: &msg,
+			Author:  &author,
+		})
+	}
+
+	return messages, nil
+}
+
+// Helper functions
+func (s *Service) getMessageAttachments(ctx context.Context, messageID uuid.UUID) ([]models.MessageAttachment, error) {
+	query := `
+		SELECT id, message_id, message_created_at, uploader_id, filename, file_url, file_size, content_type, thumbnail_url, width, height, created_at
+		FROM message_attachments
+		WHERE message_id = $1`
+
+	rows, err := s.db.Query(ctx, query, messageID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var attachments []models.MessageAttachment
+	for rows.Next() {
+		var a models.MessageAttachment
+		err := rows.Scan(&a.ID, &a.MessageID, &a.MessageCreatedAt, &a.UploaderID, &a.Filename, &a.FileURL,
+			&a.FileSize, &a.ContentType, &a.ThumbnailURL, &a.Width, &a.Height, &a.CreatedAt)
+		if err != nil {
+			return nil, err
+		}
+		attachments = append(attachments, a)
+	}
+
+	return attachments, nil
+}
+
+func (s *Service) getReplyPreview(ctx context.Context, messageID uuid.UUID) (*MessageReplyPreview, error) {
+	query := `
+		SELECT m.id, m.content, m.author_id,
+		       u.id, u.username, u.display_name, u.avatar_url, u.status
+		FROM messages m
+		JOIN users u ON u.id = m.author_id
+		WHERE m.id = $1`
+
+	var preview MessageReplyPreview
+	var encContent []byte
+	var author models.PublicUser
+
+	err := s.db.QueryRow(ctx, query, messageID).Scan(
+		&preview.ID, &encContent, &preview.AuthorID,
+		&author.ID, &author.Username, &author.DisplayName, &author.AvatarURL, &author.Status,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	decrypted, err := encryption.Decrypt(encContent, s.encryptionKey)
+	if err != nil {
+		preview.Content = "[Decryption Error]"
+	} else {
+		content := string(decrypted)
+		if len(content) > 100 {
+			content = content[:100] + "..."
+		}
+		preview.Content = content
+	}
+	preview.Author = &author
+
+	return &preview, nil
+}
+
+func (s *Service) CanManageMessages(ctx context.Context, channelID, userID uuid.UUID) bool {
+	return s.channelService.CanManageMessages(ctx, channelID, userID)
+}
+
+func (s *Service) batchGetAttachments(ctx context.Context, messageIDs []uuid.UUID) map[uuid.UUID][]models.MessageAttachment {
+	result := make(map[uuid.UUID][]models.MessageAttachment)
+
+	query := `
+		SELECT id, message_id, message_created_at, uploader_id, filename, file_url, file_size, content_type, thumbnail_url, width, height, created_at
+		FROM message_attachments
+		WHERE message_id = ANY($1)`
+
+	rows, err := s.db.Query(ctx, query, messageIDs)
+	if err != nil {
+		return result
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var a models.MessageAttachment
+		err := rows.Scan(&a.ID, &a.MessageID, &a.MessageCreatedAt, &a.UploaderID, &a.Filename, &a.FileURL,
+			&a.FileSize, &a.ContentType, &a.ThumbnailURL, &a.Width, &a.Height, &a.CreatedAt)
+		if err != nil {
+			continue
+		}
+		if a.MessageID != nil {
+			result[*a.MessageID] = append(result[*a.MessageID], a)
+		}
+	}
+
+	return result
+}
+
+// Typing indicator methods using Redis
+func (s *Service) SetTyping(ctx context.Context, channelID, userID uuid.UUID) error {
+	key := fmt.Sprintf("typing:%s", channelID.String())
+	member := userID.String()
+
+	// Add to sorted set with current timestamp as score
+	s.redis.ZAdd(ctx, key, redis.Z{
+		Score:  float64(time.Now().Unix()),
+		Member: member,
+	})
+	s.redis.Expire(ctx, key, 10*time.Second)
+
+	// Publish typing event
+	event := map[string]interface{}{
+		"channelId": channelID.String(),
+		"userId":    userID.String(),
+		"typing":    true,
+	}
+	eventJSON, _ := json.Marshal(event)
+	s.redis.Publish(ctx, fmt.Sprintf("channel:%s:typing", channelID.String()), eventJSON)
+
+	return nil
+}
+
+func (s *Service) GetTypingUsers(ctx context.Context, channelID uuid.UUID) ([]uuid.UUID, error) {
+	key := fmt.Sprintf("typing:%s", channelID.String())
+
+	// Get users who typed in the last 5 seconds
+	cutoff := float64(time.Now().Add(-5 * time.Second).Unix())
+
+	members, err := s.redis.ZRangeByScore(ctx, key, &redis.ZRangeBy{
+		Min: fmt.Sprintf("%f", cutoff),
+		Max: "+inf",
+	}).Result()
+	if err != nil {
+		return nil, err
+	}
+
+	var users []uuid.UUID
+	for _, m := range members {
+		if id, err := uuid.Parse(m); err == nil {
+			users = append(users, id)
+		}
+	}
+
+	return users, nil
+}

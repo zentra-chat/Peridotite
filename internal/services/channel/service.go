@@ -1,0 +1,452 @@
+package channel
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/zentra/peridotite/internal/models"
+	"github.com/zentra/peridotite/internal/services/community"
+	"github.com/zentra/peridotite/pkg/database"
+)
+
+var (
+	ErrChannelNotFound   = errors.New("channel not found")
+	ErrCategoryNotFound  = errors.New("category not found")
+	ErrInsufficientPerms = errors.New("insufficient permissions")
+)
+
+type Service struct {
+	db               *pgxpool.Pool
+	communityService *community.Service
+}
+
+func NewService(db *pgxpool.Pool, communityService *community.Service) *Service {
+	return &Service{
+		db:               db,
+		communityService: communityService,
+	}
+}
+
+type CreateChannelRequest struct {
+	Name            string     `json:"name" validate:"required,channelname"`
+	Topic           *string    `json:"topic" validate:"omitempty,max=1024"`
+	Type            string     `json:"type" validate:"required,oneof=text announcement gallery forum"`
+	CategoryID      *uuid.UUID `json:"categoryId"`
+	IsNSFW          bool       `json:"isNsfw"`
+	SlowmodeSeconds int        `json:"slowmodeSeconds" validate:"min=0,max=21600"`
+}
+
+func (s *Service) CreateChannel(ctx context.Context, communityID, userID uuid.UUID, req *CreateChannelRequest) (*models.Channel, error) {
+	// Check permissions
+	if err := s.requireChannelPermission(ctx, communityID, userID, models.PermissionManageChannels); err != nil {
+		return nil, err
+	}
+
+	// Get max position
+	var maxPos int
+	s.db.QueryRow(ctx,
+		`SELECT COALESCE(MAX(position), -1) FROM channels WHERE community_id = $1`,
+		communityID,
+	).Scan(&maxPos)
+
+	channel := &models.Channel{
+		ID:              uuid.New(),
+		CommunityID:     communityID,
+		CategoryID:      req.CategoryID,
+		Name:            req.Name,
+		Topic:           req.Topic,
+		Type:            models.ChannelType(req.Type),
+		Position:        maxPos + 1,
+		IsNSFW:          req.IsNSFW,
+		SlowmodeSeconds: req.SlowmodeSeconds,
+		CreatedAt:       time.Now(),
+		UpdatedAt:       time.Now(),
+	}
+
+	_, err := s.db.Exec(ctx,
+		`INSERT INTO channels (id, community_id, category_id, name, topic, type, position, is_nsfw, slowmode_seconds, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		channel.ID, channel.CommunityID, channel.CategoryID, channel.Name, channel.Topic,
+		channel.Type, channel.Position, channel.IsNSFW, channel.SlowmodeSeconds, channel.CreatedAt, channel.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return channel, nil
+}
+
+func (s *Service) GetChannel(ctx context.Context, id uuid.UUID) (*models.Channel, error) {
+	channel := &models.Channel{}
+	err := s.db.QueryRow(ctx,
+		`SELECT id, community_id, category_id, name, topic, type, position, is_nsfw, slowmode_seconds, created_at, updated_at
+		FROM channels WHERE id = $1`,
+		id,
+	).Scan(
+		&channel.ID, &channel.CommunityID, &channel.CategoryID, &channel.Name, &channel.Topic,
+		&channel.Type, &channel.Position, &channel.IsNSFW, &channel.SlowmodeSeconds, &channel.CreatedAt, &channel.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrChannelNotFound
+		}
+		return nil, err
+	}
+	return channel, nil
+}
+
+func (s *Service) GetCommunityChannels(ctx context.Context, communityID uuid.UUID) ([]*models.ChannelWithCategory, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT c.id, c.community_id, c.category_id, c.name, c.topic, c.type, c.position, 
+		c.is_nsfw, c.slowmode_seconds, c.created_at, c.updated_at, cat.name as category_name
+		FROM channels c
+		LEFT JOIN channel_categories cat ON cat.id = c.category_id
+		WHERE c.community_id = $1
+		ORDER BY cat.position NULLS FIRST, c.position`,
+		communityID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var channels []*models.ChannelWithCategory
+	for rows.Next() {
+		c := &models.ChannelWithCategory{}
+		err := rows.Scan(
+			&c.ID, &c.CommunityID, &c.CategoryID, &c.Name, &c.Topic, &c.Type,
+			&c.Position, &c.IsNSFW, &c.SlowmodeSeconds, &c.CreatedAt, &c.UpdatedAt, &c.CategoryName,
+		)
+		if err != nil {
+			return nil, err
+		}
+		channels = append(channels, c)
+	}
+
+	return channels, nil
+}
+
+type UpdateChannelRequest struct {
+	Name            *string    `json:"name" validate:"omitempty,channelname"`
+	Topic           *string    `json:"topic" validate:"omitempty,max=1024"`
+	CategoryID      *uuid.UUID `json:"categoryId"`
+	IsNSFW          *bool      `json:"isNsfw"`
+	SlowmodeSeconds *int       `json:"slowmodeSeconds" validate:"omitempty,min=0,max=21600"`
+}
+
+func (s *Service) UpdateChannel(ctx context.Context, channelID, userID uuid.UUID, req *UpdateChannelRequest) (*models.Channel, error) {
+	channel, err := s.GetChannel(ctx, channelID)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.requireChannelPermission(ctx, channel.CommunityID, userID, models.PermissionManageChannels); err != nil {
+		return nil, err
+	}
+
+	_, err = s.db.Exec(ctx,
+		`UPDATE channels SET 
+			name = COALESCE($2, name),
+			topic = COALESCE($3, topic),
+			category_id = COALESCE($4, category_id),
+			is_nsfw = COALESCE($5, is_nsfw),
+			slowmode_seconds = COALESCE($6, slowmode_seconds),
+			updated_at = NOW()
+		WHERE id = $1`,
+		channelID, req.Name, req.Topic, req.CategoryID, req.IsNSFW, req.SlowmodeSeconds,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.GetChannel(ctx, channelID)
+}
+
+func (s *Service) DeleteChannel(ctx context.Context, channelID, userID uuid.UUID) error {
+	channel, err := s.GetChannel(ctx, channelID)
+	if err != nil {
+		return err
+	}
+
+	if err := s.requireChannelPermission(ctx, channel.CommunityID, userID, models.PermissionManageChannels); err != nil {
+		return err
+	}
+
+	_, err = s.db.Exec(ctx, `DELETE FROM channels WHERE id = $1`, channelID)
+	return err
+}
+
+func (s *Service) ReorderChannels(ctx context.Context, communityID, userID uuid.UUID, channelIDs []uuid.UUID) error {
+	if err := s.requireChannelPermission(ctx, communityID, userID, models.PermissionManageChannels); err != nil {
+		return err
+	}
+
+	return database.WithTransaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		for i, channelID := range channelIDs {
+			_, err := tx.Exec(ctx,
+				`UPDATE channels SET position = $2 WHERE id = $1 AND community_id = $3`,
+				channelID, i, communityID,
+			)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// Categories
+
+type CreateCategoryRequest struct {
+	Name string `json:"name" validate:"required,min=1,max=64"`
+}
+
+func (s *Service) CreateCategory(ctx context.Context, communityID, userID uuid.UUID, req *CreateCategoryRequest) (*models.ChannelCategory, error) {
+	if err := s.requireChannelPermission(ctx, communityID, userID, models.PermissionManageChannels); err != nil {
+		return nil, err
+	}
+
+	var maxPos int
+	s.db.QueryRow(ctx,
+		`SELECT COALESCE(MAX(position), -1) FROM channel_categories WHERE community_id = $1`,
+		communityID,
+	).Scan(&maxPos)
+
+	category := &models.ChannelCategory{
+		ID:          uuid.New(),
+		CommunityID: communityID,
+		Name:        req.Name,
+		Position:    maxPos + 1,
+		CreatedAt:   time.Now(),
+	}
+
+	_, err := s.db.Exec(ctx,
+		`INSERT INTO channel_categories (id, community_id, name, position, created_at)
+		VALUES ($1, $2, $3, $4, $5)`,
+		category.ID, category.CommunityID, category.Name, category.Position, category.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return category, nil
+}
+
+func (s *Service) GetCategories(ctx context.Context, communityID uuid.UUID) ([]*models.ChannelCategory, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT id, community_id, name, position, created_at
+		FROM channel_categories WHERE community_id = $1
+		ORDER BY position`,
+		communityID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var categories []*models.ChannelCategory
+	for rows.Next() {
+		c := &models.ChannelCategory{}
+		err := rows.Scan(&c.ID, &c.CommunityID, &c.Name, &c.Position, &c.CreatedAt)
+		if err != nil {
+			return nil, err
+		}
+		categories = append(categories, c)
+	}
+
+	return categories, nil
+}
+
+func (s *Service) UpdateCategory(ctx context.Context, categoryID, userID uuid.UUID, name string) (*models.ChannelCategory, error) {
+	var communityID uuid.UUID
+	err := s.db.QueryRow(ctx,
+		`SELECT community_id FROM channel_categories WHERE id = $1`,
+		categoryID,
+	).Scan(&communityID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrCategoryNotFound
+		}
+		return nil, err
+	}
+
+	if err := s.requireChannelPermission(ctx, communityID, userID, models.PermissionManageChannels); err != nil {
+		return nil, err
+	}
+
+	_, err = s.db.Exec(ctx,
+		`UPDATE channel_categories SET name = $2 WHERE id = $1`,
+		categoryID, name,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	category := &models.ChannelCategory{}
+	err = s.db.QueryRow(ctx,
+		`SELECT id, community_id, name, position, created_at FROM channel_categories WHERE id = $1`,
+		categoryID,
+	).Scan(&category.ID, &category.CommunityID, &category.Name, &category.Position, &category.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+
+	return category, nil
+}
+
+func (s *Service) DeleteCategory(ctx context.Context, categoryID, userID uuid.UUID) error {
+	var communityID uuid.UUID
+	err := s.db.QueryRow(ctx,
+		`SELECT community_id FROM channel_categories WHERE id = $1`,
+		categoryID,
+	).Scan(&communityID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrCategoryNotFound
+		}
+		return err
+	}
+
+	if err := s.requireChannelPermission(ctx, communityID, userID, models.PermissionManageChannels); err != nil {
+		return err
+	}
+
+	// Remove category from channels (don't delete channels)
+	_, err = s.db.Exec(ctx,
+		`UPDATE channels SET category_id = NULL WHERE category_id = $1`,
+		categoryID,
+	)
+	if err != nil {
+		return err
+	}
+
+	_, err = s.db.Exec(ctx, `DELETE FROM channel_categories WHERE id = $1`, categoryID)
+	return err
+}
+
+// Channel Permissions
+
+func (s *Service) GetChannelPermissions(ctx context.Context, channelID uuid.UUID) ([]*models.ChannelPermission, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT id, channel_id, target_type, target_id, allow_permissions, deny_permissions
+		FROM channel_permissions WHERE channel_id = $1`,
+		channelID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var perms []*models.ChannelPermission
+	for rows.Next() {
+		p := &models.ChannelPermission{}
+		err := rows.Scan(&p.ID, &p.ChannelID, &p.TargetType, &p.TargetID, &p.AllowPermissions, &p.DenyPermissions)
+		if err != nil {
+			return nil, err
+		}
+		perms = append(perms, p)
+	}
+
+	return perms, nil
+}
+
+type SetChannelPermissionRequest struct {
+	TargetType       string    `json:"targetType" validate:"required,oneof=role member"`
+	TargetID         uuid.UUID `json:"targetId" validate:"required"`
+	AllowPermissions int64     `json:"allowPermissions"`
+	DenyPermissions  int64     `json:"denyPermissions"`
+}
+
+func (s *Service) SetChannelPermission(ctx context.Context, channelID, userID uuid.UUID, req *SetChannelPermissionRequest) error {
+	channel, err := s.GetChannel(ctx, channelID)
+	if err != nil {
+		return err
+	}
+
+	if err := s.requireChannelPermission(ctx, channel.CommunityID, userID, models.PermissionManageChannels); err != nil {
+		return err
+	}
+
+	_, err = s.db.Exec(ctx,
+		`INSERT INTO channel_permissions (id, channel_id, target_type, target_id, allow_permissions, deny_permissions)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (channel_id, target_type, target_id) 
+		DO UPDATE SET allow_permissions = $5, deny_permissions = $6`,
+		uuid.New(), channelID, req.TargetType, req.TargetID, req.AllowPermissions, req.DenyPermissions,
+	)
+	return err
+}
+
+func (s *Service) DeleteChannelPermission(ctx context.Context, channelID, userID uuid.UUID, targetType string, targetID uuid.UUID) error {
+	channel, err := s.GetChannel(ctx, channelID)
+	if err != nil {
+		return err
+	}
+
+	if err := s.requireChannelPermission(ctx, channel.CommunityID, userID, models.PermissionManageChannels); err != nil {
+		return err
+	}
+
+	_, err = s.db.Exec(ctx,
+		`DELETE FROM channel_permissions WHERE channel_id = $1 AND target_type = $2 AND target_id = $3`,
+		channelID, targetType, targetID,
+	)
+	return err
+}
+
+// Permission helpers
+// I don't like this function, but it will do for now.
+func (s *Service) requireChannelPermission(ctx context.Context, communityID, userID uuid.UUID, permission int64) error {
+	member, err := s.communityService.GetMember(ctx, communityID, userID)
+	if err != nil {
+		return err
+	}
+
+	// Owner and admin have all permissions
+	if member.Role == models.MemberRoleOwner || member.Role == models.MemberRoleAdmin {
+		return nil
+	}
+
+	// Check specific permissions
+	community, err := s.communityService.GetCommunity(ctx, communityID)
+	if err != nil {
+		return err
+	}
+	if community.OwnerID == userID {
+		return nil
+	}
+
+	return ErrInsufficientPerms
+}
+
+func (s *Service) CanAccessChannel(ctx context.Context, channelID, userID uuid.UUID) bool {
+	channel, err := s.GetChannel(ctx, channelID)
+	if err != nil {
+		return false
+	}
+
+	return s.communityService.IsMember(ctx, channel.CommunityID, userID)
+}
+
+func (s *Service) CanSendMessage(ctx context.Context, channelID, userID uuid.UUID) bool {
+	channel, err := s.GetChannel(ctx, channelID)
+	if err != nil {
+		return false
+	}
+
+	return s.communityService.IsMember(ctx, channel.CommunityID, userID)
+}
+
+func (s *Service) CanManageMessages(ctx context.Context, channelID, userID uuid.UUID) bool {
+	channel, err := s.GetChannel(ctx, channelID)
+	if err != nil {
+		return false
+	}
+
+	err = s.requireChannelPermission(ctx, channel.CommunityID, userID, models.PermissionManageMessages)
+	return err == nil
+}
