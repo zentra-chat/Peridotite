@@ -36,7 +36,7 @@ func NewHandler(hub *Hub, jwtSecret string) *Handler {
 func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
 
-	// WebSocket endpoint - requires authentication via query param or header
+	// WebSocket endpoint - prefers /ws but handles both /ws and /ws/
 	r.Get("/", h.HandleWebSocket)
 
 	// REST endpoints for presence/typing (alternative to WebSocket)

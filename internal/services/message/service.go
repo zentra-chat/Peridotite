@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	"github.com/rs/zerolog/log"
 	"github.com/zentra/peridotite/internal/models"
 	"github.com/zentra/peridotite/pkg/encryption"
 )
@@ -47,7 +48,7 @@ func NewService(db *pgxpool.Pool, redis *redis.Client, encryptionKey []byte, cha
 
 // Request/Response types
 type CreateMessageRequest struct {
-	Content     string      `json:"content" validate:"required,max=4000"`
+	Content     string      `json:"content" validate:"required_without=Attachments,max=4000"`
 	ReplyToID   *uuid.UUID  `json:"replyToId,omitempty"`
 	Attachments []uuid.UUID `json:"attachments,omitempty" validate:"max=10"`
 }
@@ -81,6 +82,35 @@ type GetMessagesParams struct {
 	Before *uuid.UUID
 	After  *uuid.UUID
 	Limit  int
+}
+
+func (s *Service) broadcast(ctx context.Context, channelID string, eventType string, data interface{}) {
+	event := struct {
+		Type string      `json:"type"`
+		Data interface{} `json:"data"`
+	}{
+		Type: eventType,
+		Data: data,
+	}
+
+	broadcast := struct {
+		ChannelID string      `json:"channelId"`
+		Event     interface{} `json:"event"`
+	}{
+		ChannelID: channelID,
+		Event:     event,
+	}
+
+	jsonData, err := json.Marshal(broadcast)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to marshal message broadcast")
+		return
+	}
+
+	err = s.redis.Publish(ctx, "websocket:broadcast", jsonData).Err()
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to publish message broadcast to Redis")
+	}
 }
 
 // CreateMessage creates a new message in a channel
@@ -157,7 +187,15 @@ func (s *Service) CreateMessage(ctx context.Context, channelID, userID uuid.UUID
 	}
 
 	// Fetch complete response
-	return s.GetMessage(ctx, messageID, userID)
+	resp, err := s.GetMessage(ctx, messageID, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Broadcast to WebSocket clients
+	s.broadcast(ctx, channelID.String(), "MESSAGE_CREATE", resp)
+
+	return resp, nil
 }
 
 // GetMessage retrieves a single message
@@ -384,7 +422,15 @@ func (s *Service) UpdateMessage(ctx context.Context, messageID, userID uuid.UUID
 		return nil, err
 	}
 
-	return s.GetMessage(ctx, messageID, userID)
+	resp, err := s.GetMessage(ctx, messageID, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Broadcast update
+	s.broadcast(ctx, resp.ChannelID.String(), "MESSAGE_UPDATE", resp)
+
+	return resp, nil
 }
 
 // DeleteMessage soft-deletes a message
@@ -410,7 +456,17 @@ func (s *Service) DeleteMessage(ctx context.Context, messageID, userID uuid.UUID
 		`UPDATE messages SET deleted_at = $1 WHERE id = $2`,
 		time.Now(), messageID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Broadcast delete
+	s.broadcast(ctx, channelID.String(), "MESSAGE_DELETE", map[string]interface{}{
+		"channelId": channelID.String(),
+		"messageId": messageID.String(),
+	})
+
+	return nil
 }
 
 // AddReaction adds a reaction to a message
@@ -449,17 +505,30 @@ func (s *Service) AddReaction(ctx context.Context, messageID, userID uuid.UUID, 
 		WHERE id = $4 AND created_at = $5`
 
 	_, err = s.db.Exec(ctx, query, emoji, userID.String(), time.Now(), messageID, createdAt)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Broadcast reaction add
+	s.broadcast(ctx, channelID.String(), "REACTION_ADD", map[string]interface{}{
+		"channelId": channelID.String(),
+		"messageId": messageID.String(),
+		"userId":    userID.String(),
+		"emoji":     emoji,
+	})
+
+	return nil
 }
 
 // RemoveReaction removes a reaction from a message
 func (s *Service) RemoveReaction(ctx context.Context, messageID, userID uuid.UUID, emoji string) error {
 	// Need createdAt for partitioned table update
-	var createdAt time.Time
+	var createdAt, channelID uuid.UUID
+	var createdAtTime time.Time
 	err := s.db.QueryRow(ctx,
-		`SELECT created_at FROM messages WHERE id = $1 AND deleted_at IS NULL`,
+		`SELECT created_at, channel_id FROM messages WHERE id = $1 AND deleted_at IS NULL`,
 		messageID,
-	).Scan(&createdAt)
+	).Scan(&createdAtTime, &channelID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrMessageNotFound
@@ -477,8 +546,20 @@ func (s *Service) RemoveReaction(ctx context.Context, messageID, userID uuid.UUI
 		updated_at = $3
 		WHERE id = $4 AND created_at = $5`
 
-	_, err = s.db.Exec(ctx, query, emoji, userID.String(), time.Now(), messageID, createdAt)
-	return err
+	_, err = s.db.Exec(ctx, query, emoji, userID.String(), time.Now(), messageID, createdAtTime)
+	if err != nil {
+		return err
+	}
+
+	// Broadcast reaction remove
+	s.broadcast(ctx, channelID.String(), "REACTION_REMOVE", map[string]interface{}{
+		"channelId": channelID.String(),
+		"messageId": messageID.String(),
+		"userId":    userID.String(),
+		"emoji":     emoji,
+	})
+
+	return nil
 }
 
 // PinMessage pins/unpins a message

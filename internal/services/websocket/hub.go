@@ -12,6 +12,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 	"github.com/zentra/peridotite/internal/services/channel"
+	"github.com/zentra/peridotite/internal/services/user"
 )
 
 // Event types
@@ -57,6 +58,7 @@ type Hub struct {
 	broadcast      chan *BroadcastMessage
 	redis          *redis.Client
 	channelService *channel.Service
+	userService    *user.Service
 	mu             sync.RWMutex
 }
 
@@ -79,7 +81,7 @@ type ClientMessage struct {
 	Data json.RawMessage `json:"data"`
 }
 
-func NewHub(redisClient *redis.Client, channelService *channel.Service) *Hub {
+func NewHub(redisClient *redis.Client, channelService *channel.Service, userService *user.Service) *Hub {
 	return &Hub{
 		clients:        make(map[uuid.UUID]*Client),
 		userClients:    make(map[uuid.UUID][]*Client),
@@ -89,6 +91,7 @@ func NewHub(redisClient *redis.Client, channelService *channel.Service) *Hub {
 		broadcast:      make(chan *BroadcastMessage, 256),
 		redis:          redisClient,
 		channelService: channelService,
+		userService:    userService,
 	}
 }
 
@@ -402,12 +405,20 @@ func (h *Hub) SetTyping(ctx context.Context, channelID string, userID uuid.UUID)
 	})
 	h.redis.Expire(ctx, key, 10*time.Second)
 
+	// Fetch user info for the typing event
+	u, err := h.userService.GetUserByID(ctx, userID)
+	if err != nil {
+		log.Error().Err(err).Str("userId", userID.String()).Msg("Failed to fetch user for typing event")
+		return
+	}
+
 	// Broadcast typing event
 	h.Broadcast(channelID, &Event{
 		Type: EventTypeTypingStart,
 		Data: map[string]interface{}{
 			"channelId": channelID,
 			"userId":    userID.String(),
+			"user":      u,
 		},
 	}, nil)
 }

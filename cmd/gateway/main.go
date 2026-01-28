@@ -79,7 +79,7 @@ func main() {
 	mediaService := media.NewService(db, minioClient, cfg.Storage.Bucket, cfg.Storage.CDNBaseURL, communityService)
 
 	// Initialize WebSocket hub
-	wsHub := websocket.NewHub(redisClient, channelService)
+	wsHub := websocket.NewHub(redisClient, channelService, userService)
 	go wsHub.Run(context.Background())
 
 	// Initialize handlers
@@ -99,16 +99,17 @@ func main() {
 	r.Use(chimiddleware.RealIP)
 	r.Use(middleware.LoggingMiddleware)
 	r.Use(chimiddleware.Recoverer)
-	r.Use(chimiddleware.Timeout(60 * time.Second))
+	r.Use(chimiddleware.RedirectSlashes)
 
 	// CORS
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   cfg.Server.AllowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-Request-ID"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-Request-ID", "Origin"},
 		ExposedHeaders:   []string{"Link", "X-Request-ID"},
 		AllowCredentials: true,
 		MaxAge:           300,
+		Debug:            cfg.Environment == "development",
 	}))
 
 	// Security headers
@@ -122,6 +123,8 @@ func main() {
 
 	// API routes
 	r.Route("/api/v1", func(r chi.Router) {
+		r.Use(chimiddleware.Timeout(60 * time.Second))
+
 		// Public routes
 		r.Mount("/auth", authHandler.Routes())
 
@@ -145,11 +148,8 @@ func main() {
 
 	// Create HTTP server
 	server := &http.Server{
-		Addr:         ":" + cfg.Server.Port,
-		Handler:      r,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:    "0.0.0.0:" + cfg.Server.Port,
+		Handler: r,
 	}
 
 	// Start server

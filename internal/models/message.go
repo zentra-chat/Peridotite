@@ -35,9 +35,9 @@ type MessageAttachment struct {
 	MessageCreatedAt *time.Time `json:"-" db:"message_created_at"`
 	UploaderID       uuid.UUID  `json:"uploaderId" db:"uploader_id"`
 	Filename         string     `json:"filename" db:"filename"`
-	FileURL          string     `json:"fileUrl" db:"file_url"`
-	FileSize         int64      `json:"fileSize" db:"file_size"`
-	ContentType      *string    `json:"contentType,omitempty" db:"content_type"`
+	FileURL          string     `json:"url" db:"file_url"`
+	FileSize         int64      `json:"size" db:"file_size"`
+	ContentType      *string    `json:"mimeType,omitempty" db:"content_type"`
 	ThumbnailURL     *string    `json:"thumbnailUrl,omitempty" db:"thumbnail_url"`
 	Width            *int       `json:"width,omitempty" db:"width"`
 	Height           *int       `json:"height,omitempty" db:"height"`

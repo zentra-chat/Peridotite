@@ -55,7 +55,14 @@ func Load() (*Config, error) {
 
 	// Server
 	cfg.Server.Port = getEnv("PORT", "8080")
-	cfg.Server.AllowedOrigins = getEnvSlice("CORS_ALLOWED_ORIGINS", []string{"http://localhost:5173", "http://localhost:3000"})
+	cfg.Server.AllowedOrigins = getEnvSlice("CORS_ALLOWED_ORIGINS", []string{
+		"http://localhost:5173",
+		"http://localhost:5174",
+		"http://127.0.0.1:5173",
+		"http://127.0.0.1:5174",
+		"http://localhost:3000",
+		"http://127.0.0.1:3000",
+	})
 	cfg.Server.RateLimitRPS = getEnvInt("RATE_LIMIT_RPS", 50)
 	cfg.Server.RateLimitBurst = getEnvInt("RATE_LIMIT_BURST", 100)
 

@@ -90,7 +90,7 @@ func NewService(db *pgxpool.Pool, minioClient *minio.Client, bucketName, cdnBase
 type UploadResult struct {
 	ID           uuid.UUID `json:"id"`
 	Filename     string    `json:"filename"`
-	ContentType  string    `json:"contentType"`
+	ContentType  string    `json:"mimeType"`
 	Size         int64     `json:"size"`
 	URL          string    `json:"url"`
 	ThumbnailURL *string   `json:"thumbnailUrl,omitempty"`
