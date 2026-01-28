@@ -39,6 +39,9 @@ func (h *Handler) Routes() chi.Router {
 			r.Patch("/", h.UpdateCommunity)
 			r.Delete("/", h.DeleteCommunity)
 
+			r.Delete("/icon", h.RemoveCommunityIcon)
+			r.Delete("/banner", h.RemoveCommunityBanner)
+
 			r.Post("/join", h.JoinCommunity)
 			r.Post("/leave", h.LeaveCommunity)
 
@@ -173,6 +176,62 @@ func (h *Handler) UpdateCommunity(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.RespondSuccess(w, community)
+}
+
+func (h *Handler) RemoveCommunityIcon(w http.ResponseWriter, r *http.Request) {
+	userID, err := middleware.RequireAuth(r.Context())
+	if err != nil {
+		utils.RespondError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		utils.RespondError(w, http.StatusBadRequest, "Invalid community ID")
+		return
+	}
+
+	if err := h.service.RemoveCommunityIcon(r.Context(), id, userID); err != nil {
+		switch err {
+		case ErrCommunityNotFound:
+			utils.RespondError(w, http.StatusNotFound, "Community not found")
+		case ErrInsufficientPerms:
+			utils.RespondError(w, http.StatusForbidden, "Insufficient permissions")
+		default:
+			utils.RespondError(w, http.StatusInternalServerError, "Failed to remove community icon")
+		}
+		return
+	}
+
+	utils.RespondNoContent(w)
+}
+
+func (h *Handler) RemoveCommunityBanner(w http.ResponseWriter, r *http.Request) {
+	userID, err := middleware.RequireAuth(r.Context())
+	if err != nil {
+		utils.RespondError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		utils.RespondError(w, http.StatusBadRequest, "Invalid community ID")
+		return
+	}
+
+	if err := h.service.RemoveCommunityBanner(r.Context(), id, userID); err != nil {
+		switch err {
+		case ErrCommunityNotFound:
+			utils.RespondError(w, http.StatusNotFound, "Community not found")
+		case ErrInsufficientPerms:
+			utils.RespondError(w, http.StatusForbidden, "Insufficient permissions")
+		default:
+			utils.RespondError(w, http.StatusInternalServerError, "Failed to remove community banner")
+		}
+		return
+	}
+
+	utils.RespondNoContent(w)
 }
 
 func (h *Handler) DeleteCommunity(w http.ResponseWriter, r *http.Request) {

@@ -287,6 +287,11 @@ func (h *Handler) UploadCommunityBanner(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if err := h.service.UpdateCommunityBanner(r.Context(), communityID, userID, url); err != nil {
+		utils.RespondError(w, http.StatusInternalServerError, "Failed to update community banner")
+		return
+	}
+
 	utils.RespondSuccess(w, map[string]string{"bannerUrl": url})
 }
 
@@ -332,6 +337,11 @@ func (h *Handler) UploadCommunityIcon(w http.ResponseWriter, r *http.Request) {
 		default:
 			utils.RespondError(w, http.StatusInternalServerError, "Failed to upload icon")
 		}
+		return
+	}
+
+	if err := h.service.UpdateCommunityIcon(r.Context(), communityID, userID, url); err != nil {
+		utils.RespondError(w, http.StatusInternalServerError, "Failed to update community icon")
 		return
 	}
 

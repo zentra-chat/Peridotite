@@ -252,6 +252,42 @@ func (s *Service) UpdateCommunityIcon(ctx context.Context, communityID, userID u
 	return err
 }
 
+func (s *Service) UpdateCommunityBanner(ctx context.Context, communityID, userID uuid.UUID, bannerURL string) error {
+	if err := s.requirePermission(ctx, communityID, userID, models.PermissionManageCommunity); err != nil {
+		return err
+	}
+
+	_, err := s.db.Exec(ctx,
+		`UPDATE communities SET banner_url = $2, updated_at = NOW() WHERE id = $1`,
+		communityID, bannerURL,
+	)
+	return err
+}
+
+func (s *Service) RemoveCommunityIcon(ctx context.Context, communityID, userID uuid.UUID) error {
+	if err := s.requirePermission(ctx, communityID, userID, models.PermissionManageCommunity); err != nil {
+		return err
+	}
+
+	_, err := s.db.Exec(ctx,
+		`UPDATE communities SET icon_url = NULL, updated_at = NOW() WHERE id = $1`,
+		communityID,
+	)
+	return err
+}
+
+func (s *Service) RemoveCommunityBanner(ctx context.Context, communityID, userID uuid.UUID) error {
+	if err := s.requirePermission(ctx, communityID, userID, models.PermissionManageCommunity); err != nil {
+		return err
+	}
+
+	_, err := s.db.Exec(ctx,
+		`UPDATE communities SET banner_url = NULL, updated_at = NOW() WHERE id = $1`,
+		communityID,
+	)
+	return err
+}
+
 func (s *Service) DeleteCommunity(ctx context.Context, communityID, userID uuid.UUID) error {
 	// Only owner can delete
 	community, err := s.GetCommunity(ctx, communityID)

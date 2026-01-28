@@ -446,3 +446,11 @@ func (s *Service) processAvatar(imageData []byte) ([]byte, error) {
 func (s *Service) RequirePermission(ctx context.Context, communityID, userID uuid.UUID, permission int64) error {
 	return s.communityService.RequirePermission(ctx, communityID, userID, permission)
 }
+
+func (s *Service) UpdateCommunityIcon(ctx context.Context, communityID, userID uuid.UUID, iconURL string) error {
+	return s.communityService.UpdateCommunityIcon(ctx, communityID, userID, iconURL)
+}
+
+func (s *Service) UpdateCommunityBanner(ctx context.Context, communityID, userID uuid.UUID, bannerURL string) error {
+	return s.communityService.UpdateCommunityBanner(ctx, communityID, userID, bannerURL)
+}
