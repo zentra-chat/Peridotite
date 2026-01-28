@@ -101,7 +101,7 @@ type UploadResult struct {
 }
 
 // UploadAttachment handles file uploads for message attachments
-func (s *Service) UploadAttachment(ctx context.Context, userID uuid.UUID, file multipart.File, header *multipart.FileHeader) (*UploadResult, error) {
+func (s *Service) UploadAttachment(ctx context.Context, userID, channelID uuid.UUID, file multipart.File, header *multipart.FileHeader) (*UploadResult, error) {
 	contentType := header.Header.Get("Content-Type")
 	if contentType == "" {
 		contentType = "application/octet-stream"
@@ -117,16 +117,23 @@ func (s *Service) UploadAttachment(ctx context.Context, userID uuid.UUID, file m
 		return nil, ErrInvalidFileType
 	}
 
+	// Get community ID from channel
+	var communityID uuid.UUID
+	err := s.db.QueryRow(ctx, "SELECT community_id FROM channels WHERE id = $1", channelID).Scan(&communityID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get community for channel: %w", err)
+	}
+
 	// Read file content
 	fileData, err := io.ReadAll(file)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file: %w", err)
 	}
 
-	// Generate unique filename
+	// Generate unique filename with organized path: community/channel/filename
 	ext := filepath.Ext(header.Filename)
 	attachmentID := uuid.New()
-	objectName := fmt.Sprintf("%s%s", attachmentID.String(), ext)
+	objectName := fmt.Sprintf("%s/%s/%s%s", communityID.String(), channelID.String(), attachmentID.String(), ext)
 
 	// Upload to MinIO
 	_, err = s.minio.PutObject(ctx, s.bucketAttachments, objectName, bytes.NewReader(fileData), int64(len(fileData)),
@@ -139,10 +146,10 @@ func (s *Service) UploadAttachment(ctx context.Context, userID uuid.UUID, file m
 
 	fileURL := s.getPublicURL(s.bucketAttachments, objectName)
 
-	// Generate thumbnail for images
+	// Generate thumbnail for images in separate thumbs folder
 	var thumbnailURL *string
 	if AllowedImageTypes[contentType] {
-		thumbURL, err := s.generateThumbnail(ctx, fileData, attachmentID, userID, ext)
+		thumbURL, err := s.generateThumbnail(ctx, fileData, attachmentID, communityID, channelID, ext)
 		if err == nil {
 			thumbnailURL = &thumbURL
 		}
@@ -385,10 +392,10 @@ func (s *Service) isAllowedType(contentType string) bool {
 }
 
 // generateThumbnail creates a thumbnail for image attachments
-// Currnetly, only JPEG thumbnails are generated.
+// Currently, only JPEG thumbnails are generated.
 // I need to modify this later to support PNG's with transparency.
 // For now, this will do.
-func (s *Service) generateThumbnail(ctx context.Context, imageData []byte, attachmentID, userID uuid.UUID, ext string) (string, error) {
+func (s *Service) generateThumbnail(ctx context.Context, imageData []byte, attachmentID, communityID, channelID uuid.UUID, ext string) (string, error) {
 	img, _, err := image.Decode(bytes.NewReader(imageData))
 	if err != nil {
 		return "", err
@@ -402,7 +409,8 @@ func (s *Service) generateThumbnail(ctx context.Context, imageData []byte, attac
 		return "", err
 	}
 
-	thumbObjectName := fmt.Sprintf("%s_thumb.jpg", attachmentID.String())
+	// Store thumbnails in: community/channel/thumbs/filename
+	thumbObjectName := fmt.Sprintf("%s/%s/thumbs/%s_thumb.jpg", communityID.String(), channelID.String(), attachmentID.String())
 
 	_, err = s.minio.PutObject(ctx, s.bucketAttachments, thumbObjectName, &buf, int64(buf.Len()),
 		minio.PutObjectOptions{

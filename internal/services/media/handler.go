@@ -55,6 +55,19 @@ func (h *Handler) UploadAttachment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Get channelId from form
+	channelIDStr := r.FormValue("channelId")
+	if channelIDStr == "" {
+		utils.RespondError(w, http.StatusBadRequest, "channelId is required")
+		return
+	}
+
+	channelID, err := uuid.Parse(channelIDStr)
+	if err != nil {
+		utils.RespondError(w, http.StatusBadRequest, "Invalid channelId")
+		return
+	}
+
 	file, header, err := r.FormFile("file")
 	if err != nil {
 		utils.RespondError(w, http.StatusBadRequest, "No file provided")
@@ -62,7 +75,7 @@ func (h *Handler) UploadAttachment(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	result, err := h.service.UploadAttachment(r.Context(), userID, file, header)
+	result, err := h.service.UploadAttachment(r.Context(), userID, channelID, file, header)
 	if err != nil {
 		switch err {
 		case ErrFileTooLarge:
