@@ -540,7 +540,7 @@ func (s *Service) AddReaction(ctx context.Context, messageID, userID uuid.UUID, 
 // RemoveReaction removes a reaction from a message
 func (s *Service) RemoveReaction(ctx context.Context, messageID, userID uuid.UUID, emoji string) error {
 	// Need createdAt for partitioned table update
-	var createdAt, channelID uuid.UUID
+	var channelID uuid.UUID
 	var createdAtTime time.Time
 	err := s.db.QueryRow(ctx,
 		`SELECT created_at, channel_id FROM messages WHERE id = $1 AND deleted_at IS NULL`,
