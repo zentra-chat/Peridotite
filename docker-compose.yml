@@ -71,6 +71,26 @@ services:
       exit 0;
       "
 
+  db-init:
+    image: postgres:16-alpine
+    container_name: zentra-db-init
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./scripts/init-db.sql:/init-db.sql:ro
+      - ./migrations/000001_initial_schema.up.sql:/schema.up.sql:ro
+    environment:
+      PGPASSWORD: zentra_secure_password
+    entrypoint: >
+      /bin/sh -c "
+      echo 'Running database initialization...';
+      psql -h postgres -U zentra -d zentra -f /init-db.sql;
+      psql -h postgres -U zentra -d zentra -f /schema.up.sql;
+      echo 'Database initialization complete.';
+      exit 0;
+      "
+
 volumes:
   postgres_data:
   redis_data:

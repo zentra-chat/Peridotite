@@ -21,10 +21,10 @@ CREATE TABLE IF NOT EXISTS users (
     deleted_at TIMESTAMPTZ
 );
 
-CREATE INDEX idx_users_username ON users(username);
-CREATE INDEX idx_users_email ON users(email);
-CREATE INDEX idx_users_username_trgm ON users USING gin(username gin_trgm_ops);
-CREATE INDEX idx_users_display_name_trgm ON users USING gin(display_name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_users_username_trgm ON users USING gin(username gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_users_display_name_trgm ON users USING gin(display_name gin_trgm_ops);
 
 -- User sessions for refresh tokens
 CREATE TABLE IF NOT EXISTS user_sessions (
@@ -38,8 +38,8 @@ CREATE TABLE IF NOT EXISTS user_sessions (
     revoked_at TIMESTAMPTZ
 );
 
-CREATE INDEX idx_user_sessions_user_id ON user_sessions(user_id);
-CREATE INDEX idx_user_sessions_expires_at ON user_sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id ON user_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_sessions_expires_at ON user_sessions(expires_at);
 
 -- Communities (like Discord servers)
 CREATE TABLE IF NOT EXISTS communities (
@@ -57,9 +57,9 @@ CREATE TABLE IF NOT EXISTS communities (
     deleted_at TIMESTAMPTZ
 );
 
-CREATE INDEX idx_communities_owner_id ON communities(owner_id);
-CREATE INDEX idx_communities_is_public ON communities(is_public) WHERE is_public = TRUE;
-CREATE INDEX idx_communities_name_trgm ON communities USING gin(name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_communities_owner_id ON communities(owner_id);
+CREATE INDEX IF NOT EXISTS idx_communities_is_public ON communities(is_public) WHERE is_public = TRUE;
+CREATE INDEX IF NOT EXISTS idx_communities_name_trgm ON communities USING gin(name gin_trgm_ops);
 
 -- Community members
 CREATE TABLE IF NOT EXISTS community_members (
@@ -72,8 +72,8 @@ CREATE TABLE IF NOT EXISTS community_members (
     UNIQUE(community_id, user_id)
 );
 
-CREATE INDEX idx_community_members_community_id ON community_members(community_id);
-CREATE INDEX idx_community_members_user_id ON community_members(user_id);
+CREATE INDEX IF NOT EXISTS idx_community_members_community_id ON community_members(community_id);
+CREATE INDEX IF NOT EXISTS idx_community_members_user_id ON community_members(user_id);
 
 -- Community invites
 CREATE TABLE IF NOT EXISTS community_invites (
@@ -87,8 +87,8 @@ CREATE TABLE IF NOT EXISTS community_invites (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_community_invites_code ON community_invites(code);
-CREATE INDEX idx_community_invites_community_id ON community_invites(community_id);
+CREATE INDEX IF NOT EXISTS idx_community_invites_code ON community_invites(code);
+CREATE INDEX IF NOT EXISTS idx_community_invites_community_id ON community_invites(community_id);
 
 -- Roles for fine-grained permissions
 CREATE TABLE IF NOT EXISTS roles (
@@ -103,7 +103,7 @@ CREATE TABLE IF NOT EXISTS roles (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_roles_community_id ON roles(community_id);
+CREATE INDEX IF NOT EXISTS idx_roles_community_id ON roles(community_id);
 
 -- Member roles junction table
 CREATE TABLE IF NOT EXISTS member_roles (
@@ -121,7 +121,7 @@ CREATE TABLE IF NOT EXISTS channel_categories (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_channel_categories_community_id ON channel_categories(community_id);
+CREATE INDEX IF NOT EXISTS idx_channel_categories_community_id ON channel_categories(community_id);
 
 -- Channels
 CREATE TABLE IF NOT EXISTS channels (
@@ -139,8 +139,8 @@ CREATE TABLE IF NOT EXISTS channels (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_channels_community_id ON channels(community_id);
-CREATE INDEX idx_channels_category_id ON channels(category_id);
+CREATE INDEX IF NOT EXISTS idx_channels_community_id ON channels(community_id);
+CREATE INDEX IF NOT EXISTS idx_channels_category_id ON channels(category_id);
 
 -- Channel permission overwrites
 CREATE TABLE IF NOT EXISTS channel_permissions (
@@ -153,7 +153,7 @@ CREATE TABLE IF NOT EXISTS channel_permissions (
     UNIQUE(channel_id, target_type, target_id)
 );
 
-CREATE INDEX idx_channel_permissions_channel_id ON channel_permissions(channel_id);
+CREATE INDEX IF NOT EXISTS idx_channel_permissions_channel_id ON channel_permissions(channel_id);
 
 -- Messages (partitioned by month for scalability)
 CREATE TABLE IF NOT EXISTS messages (
@@ -172,38 +172,38 @@ CREATE TABLE IF NOT EXISTS messages (
     PRIMARY KEY (id, created_at)
 ) PARTITION BY RANGE (created_at);
 
-CREATE INDEX idx_messages_channel_id ON messages(channel_id, created_at DESC);
-CREATE INDEX idx_messages_author_id ON messages(author_id);
-CREATE INDEX idx_messages_reply_to_id ON messages(reply_to_id);
+CREATE INDEX IF NOT EXISTS idx_messages_channel_id ON messages(channel_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_messages_author_id ON messages(author_id);
+CREATE INDEX IF NOT EXISTS idx_messages_reply_to_id ON messages(reply_to_id);
 
 -- Create initial message partitions (one year ahead)
 -- A better solution would be to automate partition creation via a scheduled job
 -- but for now, we'll create partitions for the next 18 months
 -- I can update it manually if they project ever lasts that long.
-CREATE TABLE messages_2025_01 PARTITION OF messages FOR VALUES FROM ('2025-01-01') TO ('2025-02-01');
-CREATE TABLE messages_2025_02 PARTITION OF messages FOR VALUES FROM ('2025-02-01') TO ('2025-03-01');
-CREATE TABLE messages_2025_03 PARTITION OF messages FOR VALUES FROM ('2025-03-01') TO ('2025-04-01');
-CREATE TABLE messages_2025_04 PARTITION OF messages FOR VALUES FROM ('2025-04-01') TO ('2025-05-01');
-CREATE TABLE messages_2025_05 PARTITION OF messages FOR VALUES FROM ('2025-05-01') TO ('2025-06-01');
-CREATE TABLE messages_2025_06 PARTITION OF messages FOR VALUES FROM ('2025-06-01') TO ('2025-07-01');
-CREATE TABLE messages_2025_07 PARTITION OF messages FOR VALUES FROM ('2025-07-01') TO ('2025-08-01');
-CREATE TABLE messages_2025_08 PARTITION OF messages FOR VALUES FROM ('2025-08-01') TO ('2025-09-01');
-CREATE TABLE messages_2025_09 PARTITION OF messages FOR VALUES FROM ('2025-09-01') TO ('2025-10-01');
-CREATE TABLE messages_2025_10 PARTITION OF messages FOR VALUES FROM ('2025-10-01') TO ('2025-11-01');
-CREATE TABLE messages_2025_11 PARTITION OF messages FOR VALUES FROM ('2025-11-01') TO ('2025-12-01');
-CREATE TABLE messages_2025_12 PARTITION OF messages FOR VALUES FROM ('2025-12-01') TO ('2026-01-01');
-CREATE TABLE messages_2026_01 PARTITION OF messages FOR VALUES FROM ('2026-01-01') TO ('2026-02-01');
-CREATE TABLE messages_2026_02 PARTITION OF messages FOR VALUES FROM ('2026-02-01') TO ('2026-03-01');
-CREATE TABLE messages_2026_03 PARTITION OF messages FOR VALUES FROM ('2026-03-01') TO ('2026-04-01');
-CREATE TABLE messages_2026_04 PARTITION OF messages FOR VALUES FROM ('2026-04-01') TO ('2026-05-01');
-CREATE TABLE messages_2026_05 PARTITION OF messages FOR VALUES FROM ('2026-05-01') TO ('2026-06-01');
-CREATE TABLE messages_2026_06 PARTITION OF messages FOR VALUES FROM ('2026-06-01') TO ('2026-07-01');
-CREATE TABLE messages_2026_07 PARTITION OF messages FOR VALUES FROM ('2026-07-01') TO ('2026-08-01');
-CREATE TABLE messages_2026_08 PARTITION OF messages FOR VALUES FROM ('2026-08-01') TO ('2026-09-01');
-CREATE TABLE messages_2026_09 PARTITION OF messages FOR VALUES FROM ('2026-09-01') TO ('2026-10-01');
-CREATE TABLE messages_2026_10 PARTITION OF messages FOR VALUES FROM ('2026-10-01') TO ('2026-11-01');
-CREATE TABLE messages_2026_11 PARTITION OF messages FOR VALUES FROM ('2026-11-01') TO ('2026-12-01');
-CREATE TABLE messages_2026_12 PARTITION OF messages FOR VALUES FROM ('2026-12-01') TO ('2027-01-01');
+DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_tables WHERE tablename = 'messages_2025_01') THEN CREATE TABLE messages_2025_01 PARTITION OF messages FOR VALUES FROM ('2025-01-01') TO ('2025-02-01'); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_tables WHERE tablename = 'messages_2025_02') THEN CREATE TABLE messages_2025_02 PARTITION OF messages FOR VALUES FROM ('2025-02-01') TO ('2025-03-01'); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_tables WHERE tablename = 'messages_2025_03') THEN CREATE TABLE messages_2025_03 PARTITION OF messages FOR VALUES FROM ('2025-03-01') TO ('2025-04-01'); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_tables WHERE tablename = 'messages_2025_04') THEN CREATE TABLE messages_2025_04 PARTITION OF messages FOR VALUES FROM ('2025-04-01') TO ('2025-05-01'); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_tables WHERE tablename = 'messages_2025_05') THEN CREATE TABLE messages_2025_05 PARTITION OF messages FOR VALUES FROM ('2025-05-01') TO ('2025-06-01'); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_tables WHERE tablename = 'messages_2025_06') THEN CREATE TABLE messages_2025_06 PARTITION OF messages FOR VALUES FROM ('2025-06-01') TO ('2025-07-01'); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_tables WHERE tablename = 'messages_2025_07') THEN CREATE TABLE messages_2025_07 PARTITION OF messages FOR VALUES FROM ('2025-07-01') TO ('2025-08-01'); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_tables WHERE tablename = 'messages_2025_08') THEN CREATE TABLE messages_2025_08 PARTITION OF messages FOR VALUES FROM ('2025-08-01') TO ('2025-09-01'); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_tables WHERE tablename = 'messages_2025_09') THEN CREATE TABLE messages_2025_09 PARTITION OF messages FOR VALUES FROM ('2025-09-01') TO ('2025-10-01'); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_tables WHERE tablename = 'messages_2025_10') THEN CREATE TABLE messages_2025_10 PARTITION OF messages FOR VALUES FROM ('2025-10-01') TO ('2025-11-01'); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_tables WHERE tablename = 'messages_2025_11') THEN CREATE TABLE messages_2025_11 PARTITION OF messages FOR VALUES FROM ('2025-11-01') TO ('2025-12-01'); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_tables WHERE tablename = 'messages_2025_12') THEN CREATE TABLE messages_2025_12 PARTITION OF messages FOR VALUES FROM ('2025-12-01') TO ('2026-01-01'); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_tables WHERE tablename = 'messages_2026_01') THEN CREATE TABLE messages_2026_01 PARTITION OF messages FOR VALUES FROM ('2026-01-01') TO ('2026-02-01'); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_tables WHERE tablename = 'messages_2026_02') THEN CREATE TABLE messages_2026_02 PARTITION OF messages FOR VALUES FROM ('2026-02-01') TO ('2026-03-01'); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_tables WHERE tablename = 'messages_2026_03') THEN CREATE TABLE messages_2026_03 PARTITION OF messages FOR VALUES FROM ('2026-03-01') TO ('2026-04-01'); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_tables WHERE tablename = 'messages_2026_04') THEN CREATE TABLE messages_2026_04 PARTITION OF messages FOR VALUES FROM ('2026-04-01') TO ('2026-05-01'); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_tables WHERE tablename = 'messages_2026_05') THEN CREATE TABLE messages_2026_05 PARTITION OF messages FOR VALUES FROM ('2026-05-01') TO ('2026-06-01'); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_tables WHERE tablename = 'messages_2026_06') THEN CREATE TABLE messages_2026_06 PARTITION OF messages FOR VALUES FROM ('2026-06-01') TO ('2026-07-01'); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_tables WHERE tablename = 'messages_2026_07') THEN CREATE TABLE messages_2026_07 PARTITION OF messages FOR VALUES FROM ('2026-07-01') TO ('2026-08-01'); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_tables WHERE tablename = 'messages_2026_08') THEN CREATE TABLE messages_2026_08 PARTITION OF messages FOR VALUES FROM ('2026-08-01') TO ('2026-09-01'); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_tables WHERE tablename = 'messages_2026_09') THEN CREATE TABLE messages_2026_09 PARTITION OF messages FOR VALUES FROM ('2026-09-01') TO ('2026-10-01'); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_tables WHERE tablename = 'messages_2026_10') THEN CREATE TABLE messages_2026_10 PARTITION OF messages FOR VALUES FROM ('2026-10-01') TO ('2026-11-01'); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_tables WHERE tablename = 'messages_2026_11') THEN CREATE TABLE messages_2026_11 PARTITION OF messages FOR VALUES FROM ('2026-11-01') TO ('2026-12-01'); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_tables WHERE tablename = 'messages_2026_12') THEN CREATE TABLE messages_2026_12 PARTITION OF messages FOR VALUES FROM ('2026-12-01') TO ('2027-01-01'); END IF; END $$;
 
 -- Message attachments
 CREATE TABLE IF NOT EXISTS message_attachments (
@@ -221,7 +221,7 @@ CREATE TABLE IF NOT EXISTS message_attachments (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_message_attachments_message_id ON message_attachments(message_id);
+CREATE INDEX IF NOT EXISTS idx_message_attachments_message_id ON message_attachments(message_id);
 
 -- Direct message conversations
 CREATE TABLE IF NOT EXISTS dm_conversations (
@@ -238,7 +238,7 @@ CREATE TABLE IF NOT EXISTS dm_participants (
     PRIMARY KEY (conversation_id, user_id)
 );
 
-CREATE INDEX idx_dm_participants_user_id ON dm_participants(user_id);
+CREATE INDEX IF NOT EXISTS idx_dm_participants_user_id ON dm_participants(user_id);
 
 -- Direct messages (E2E encrypted)
 CREATE TABLE IF NOT EXISTS direct_messages (
@@ -253,8 +253,8 @@ CREATE TABLE IF NOT EXISTS direct_messages (
     deleted_at TIMESTAMPTZ
 );
 
-CREATE INDEX idx_direct_messages_conversation_id ON direct_messages(conversation_id, created_at DESC);
-CREATE INDEX idx_direct_messages_sender_id ON direct_messages(sender_id);
+CREATE INDEX IF NOT EXISTS idx_direct_messages_conversation_id ON direct_messages(conversation_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_direct_messages_sender_id ON direct_messages(sender_id);
 
 -- User blocks
 CREATE TABLE IF NOT EXISTS user_blocks (
@@ -287,8 +287,8 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_audit_logs_community_id ON audit_logs(community_id, created_at DESC);
-CREATE INDEX idx_audit_logs_actor_id ON audit_logs(actor_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_community_id ON audit_logs(community_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_actor_id ON audit_logs(actor_id);
 
 -- Function to update updated_at timestamp
 CREATE OR REPLACE FUNCTION update_updated_at_column()
@@ -300,23 +300,35 @@ END;
 $$ language 'plpgsql';
 
 -- Apply update triggers
-CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'update_users_updated_at') THEN
+    CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+END IF; END $$;
 
-CREATE TRIGGER update_communities_updated_at BEFORE UPDATE ON communities
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'update_communities_updated_at') THEN
+    CREATE TRIGGER update_communities_updated_at BEFORE UPDATE ON communities
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+END IF; END $$;
 
-CREATE TRIGGER update_channels_updated_at BEFORE UPDATE ON channels
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'update_channels_updated_at') THEN
+    CREATE TRIGGER update_channels_updated_at BEFORE UPDATE ON channels
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+END IF; END $$;
 
-CREATE TRIGGER update_roles_updated_at BEFORE UPDATE ON roles
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'update_roles_updated_at') THEN
+    CREATE TRIGGER update_roles_updated_at BEFORE UPDATE ON roles
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+END IF; END $$;
 
-CREATE TRIGGER update_dm_conversations_updated_at BEFORE UPDATE ON dm_conversations
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'update_dm_conversations_updated_at') THEN
+    CREATE TRIGGER update_dm_conversations_updated_at BEFORE UPDATE ON dm_conversations
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+END IF; END $$;
 
-CREATE TRIGGER update_user_settings_updated_at BEFORE UPDATE ON user_settings
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'update_user_settings_updated_at') THEN
+    CREATE TRIGGER update_user_settings_updated_at BEFORE UPDATE ON user_settings
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+END IF; END $$;
 
 -- Function to update community member count
 CREATE OR REPLACE FUNCTION update_community_member_count()
@@ -331,6 +343,8 @@ BEGIN
 END;
 $$ language 'plpgsql';
 
-CREATE TRIGGER update_member_count_trigger
-    AFTER INSERT OR DELETE ON community_members
-    FOR EACH ROW EXECUTE FUNCTION update_community_member_count();
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'update_member_count_trigger') THEN
+    CREATE TRIGGER update_member_count_trigger
+        AFTER INSERT OR DELETE ON community_members
+        FOR EACH ROW EXECUTE FUNCTION update_community_member_count();
+END IF; END $$;
