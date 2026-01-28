@@ -1,14 +1,15 @@
 # Zentra Peridotite API Documentation
 
-Welcome to the Zentra backend API documentation. This document covers the RESTful API endpoints, request/response formats, and authentication.
+Welcome to the Zentra backend API documentation. This document covers RESTful endpoints, request/response JSON structures, and real-time WebSocket communication.
 
 ## Table of Contents
 - [General Information](#general-information)
+- [Common Data Models](#common-data-models)
 - [Authentication](#authentication)
 - [User Management](#user-management)
 - [Communities](#communities)
-- [Channels](#channels)
-- [Messages](#messages)
+- [Channels & Categories](#channels--categories)
+- [Messages & Reactions](#messages--reactions)
 - [Media & Uploads](#media--uploads)
 - [WebSocket (Real-time)](#websocket-real-time)
 
@@ -17,195 +18,358 @@ Welcome to the Zentra backend API documentation. This document covers the RESTfu
 ## General Information
 
 - **Base URL**: `http://localhost:8080/api/v1`
-- **Response Format**: All successful responses return a JSON object with a `data` key.
-- **Error Format**: Error responses return a JSON object with `error` and optional `code` and `details`.
-- **Authentication**: JWT-based. Protected endpoints require the `Authorization: Bearer <token>` header.
+- **Content Type**: `application/json` for all requests and responses.
+- **Authentication**: JWT-based via `Authorization: Bearer <token>` header.
+- **Success Responses**: All successful non-paginated responses are wrapped in a JSON object with a `data` key.
+  ```json
+  {
+    "data": { ... } // or [ ... ]
+  }
+  ```
+- **Paginated Responses**: Used for lists that support paging.
+  ```json
+  {
+    "data": [ ... ],
+    "total": 100,
+    "page": 1,
+    "pageSize": 20,
+    "totalPages": 5
+  }
+  ```
+- **Error Responses**:
+  ```json
+  {
+    "error": "Short description of the error",
+    "code": "ERROR_CODE",
+    "details": { ... } // Optional object for validation errors
+  }
+  ```
+
+---
+
+## Common Data Models
+
+These models represent the structure of the JSON objects returned in the `data` field.
+
+### User (Public)
+```json
+{
+  "id": "uuid",
+  "username": "string",
+  "displayName": "string | null",
+  "avatarUrl": "string | null",
+  "bio": "string | null",
+  "status": "online | away | busy | invisible | offline",
+  "customStatus": "string | null"
+}
+```
+
+### Community
+```json
+{
+  "id": "uuid",
+  "name": "string",
+  "description": "string | null",
+  "iconUrl": "string | null",
+  "bannerUrl": "string | null",
+  "ownerId": "uuid",
+  "isPublic": "boolean",
+  "isOpen": "boolean",
+  "memberCount": "number",
+  "createdAt": "iso-date",
+  "updatedAt": "iso-date"
+}
+```
+
+### Channel
+```json
+{
+  "id": "uuid",
+  "communityId": "uuid",
+  "categoryId": "uuid | null",
+  "name": "string",
+  "topic": "string | null",
+  "type": "text | announcement | gallery | forum",
+  "position": "number",
+  "isNsfw": "boolean",
+  "slowmodeSeconds": "number",
+  "createdAt": "iso-date",
+  "updatedAt": "iso-date"
+}
+```
+
+### Message
+```json
+{
+  "id": "uuid",
+  "channelId": "uuid",
+  "authorId": "uuid",
+  "content": "string | null",
+  "replyToId": "uuid | null",
+  "isEdited": "boolean",
+  "isPinned": "boolean",
+  "reactions": [
+    {
+      "emoji": "string",
+      "count": "number",
+      "reacted": "boolean"
+    }
+  ],
+  "author": { ...User (Public)... },
+  "attachments": [ ...Attachment... ],
+  "createdAt": "iso-date",
+  "updatedAt": "iso-date"
+}
+```
 
 ---
 
 ## Authentication
 
 ### Register
-`POST /auth/register`
-
-**Request Body:**
-```json
-{
-  "username": "johndoe",
-  "email": "john@example.com",
-  "password": "StrongPassword123!"
-}
-```
+- **Path**: `POST /auth/register`
+- **Request**:
+  ```json
+  {
+    "username": "string",
+    "email": "string",
+    "password": "string"
+  }
+  ```
+- **Response**: `AuthResponse`
+  ```json
+  {
+    "data": {
+      "user": { ...Full User... },
+      "accessToken": "string",
+      "refreshToken": "string",
+      "expiresAt": "iso-date"
+    }
+  }
+  ```
 
 ### Login
-`POST /auth/login`
-
-**Request Body:**
-```json
-{
-  "login": "johndoe", // username or email
-  "password": "StrongPassword123!",
-  "totpCode": "123456" // optional, required if 2FA enabled
-}
-```
-
-**Response Data:**
-```json
-{
-  "user": { ... },
-  "accessToken": "...",
-  "refreshToken": "...",
-  "expiresAt": "2026-01-27T...",
-  "requires2FA": false
-}
-```
+- **Path**: `POST /auth/login`
+- **Request**:
+  ```json
+  {
+    "login": "username_or_email",
+    "password": "string",
+    "totpCode": "string" // Optional
+  }
+  ```
+- **Response**: `AuthResponse`
+  ```json
+  {
+    "data": {
+      "user": { ...Full User... },
+      "accessToken": "string",
+      "refreshToken": "string",
+      "expiresAt": "iso-date",
+      "requires2FA": "boolean"
+    }
+  }
+  ```
 
 ### Refresh Token
-`POST /auth/refresh`
-
-**Request Body:**
-```json
-{
-  "refreshToken": "..."
-}
-```
-
-### 2FA - Setup/Enable
-`POST /auth/2fa/enable` (Authenticated)
-Starts 2FA setup process. Returns QR code URL.
-
-### 2FA - Verify
-`POST /auth/2fa/verify` (Authenticated)
-Finalizes 2FA setup by verifying a code.
+- **Path**: `POST /auth/refresh`
+- **Request**: `{"refreshToken": "string"}`
+- **Response**: `AuthResponse`
 
 ---
 
 ## User Management
 
 ### Get Current User
-`GET /users/me`
+- **Path**: `GET /users/me` (Auth required)
+- **Response**: `{"data": { ...Full User... }}`
 
 ### Update Profile
-`PATCH /users/me`
+- **Path**: `PATCH /users/me` (Auth required)
+- **Request**:
+  ```json
+  {
+    "displayName": "string | null",
+    "bio": "string | null",
+    "customStatus": "string | null"
+  }
+  ```
+- **Response**: `{"data": { ...Full User... }}`
 
-**Request Body:**
-```json
-{
-  "displayName": "John D.",
-  "bio": "Expert Coder",
-  "avatarUrl": "https://..."
-}
-```
+### Update Status
+- **Path**: `PUT /users/me/status` (Auth required)
+- **Request**: `{"status": "online"}`
+- **Response**: `204 No Content`
 
-### Get User by ID
-`GET /users/{id}`
+### Get User Settings
+- **Path**: `GET /users/me/settings` (Auth required)
+- **Response**: `{"data": { ...UserSettings... }}`
+
+### Update User Settings
+- **Path**: `PATCH /users/me/settings` (Auth required)
+- **Request**:
+  ```json
+  {
+    "theme": "string",
+    "notificationsEnabled": "boolean",
+    "soundEnabled": "boolean",
+    "compactMode": "boolean",
+    "settings": "object"
+  }
+  ```
+- **Response**: `{"data": { ...UserSettings... }}`
 
 ### Search Users
-`GET /users/search?q=john`
+- **Path**: `GET /users/search?q={query}&page=1&pageSize=20` (Auth required)
+- **Response**: `PaginatedResponse<User (Public)>`
 
 ---
 
 ## Communities
 
-### List My Communities
-`GET /communities`
+### Discover
+- **Path**: `GET /communities/discover?q={query}&page=1&pageSize=20`
+- **Response**: `PaginatedResponse<Community>`
 
-### Create Community
-`POST /communities`
+### Create
+- **Path**: `POST /communities` (Auth required)
+- **Request**:
+  ```json
+  {
+    "name": "string",
+    "description": "string | null",
+    "isPublic": "boolean",
+    "isOpen": "boolean"
+  }
+  ```
+- **Response**: `{"data": { ...Community... }}`
 
-**Request Body:**
-```json
-{
-  "name": "The Great Community",
-  "description": "A place for builders",
-  "isPublic": true,
-  "isOpen": true
-}
-```
+### Member Management
+- **List Members**: `GET /communities/{id}/members?page=1&pageSize=50` (Auth required)
+  - **Response**: `PaginatedResponse<CommunityMemberWithUser>`
+- **Join**: `POST /communities/{id}/join` (Auth required)
+  - **Response**: `204 No Content`
+- **Leave**: `POST /communities/{id}/leave` (Auth required)
+  - **Response**: `204 No Content`
 
-### Get Community Details
-`GET /communities/{id}`
-
-### List Members
-`GET /communities/{id}/members`
-
-### Create Invite
-`POST /communities/{id}/invites`
-Returns an invite code.
-
----
-
-## Channels
-
-### List Channels in Community
-`GET /channels/communities/{communityId}/channels`
-
-### Create Channel
-`POST /channels/communities/{communityId}/channels`
-
-**Request Body:**
-```json
-{
-  "name": "general",
-  "type": "text", // text, announcement, gallery, forum
-  "topic": "General chat"
-}
-```
+### Invites
+- **Get Invite Info**: `GET /communities/invite/{code}` (Public)
+  - **Response**: `{"data": { "community": { ...Community... }, "valid": true }}`
+- **Join with Invite**: `POST /communities/join/{code}` (Auth required)
+  - **Response**: `{"data": { ...Community... }}`
 
 ---
 
-## Messages
+## Channels & Categories
 
-### Get Channel Messages
-`GET /messages/channels/{channelId}/messages?limit=50&before={id}`
+### Categories
+- **List Categories**: `GET /communities/{communityId}/categories` (Auth required)
+  - **Response**: `{"data": [ ...ChannelCategory... ]}`
+- **Create Category**: `POST /communities/{communityId}/categories` (Auth required)
+  - **Request**: `{"name": "string"}`
+  - **Response**: `{"data": { ...ChannelCategory... }}`
 
-### Send Message
-`POST /messages/channels/{channelId}/messages`
+### Channels
+- **List Channels**: `GET /communities/{communityId}/channels` (Auth required)
+  - **Response**: `{"data": [ ...Channel... ]}`
+- **Create Channel**: `POST /communities/{communityId}/channels` (Auth required)
+  - **Request**:
+    ```json
+    {
+      "name": "string",
+      "type": "text | announcement | gallery | forum",
+      "topic": "string | null",
+      "categoryId": "uuid | null",
+      "isNsfw": "boolean"
+    }
+    ```
+  - **Response**: `{"data": { ...Channel... }}`
 
-**Request Body:**
+### Channel Permissions
+- `GET /channels/{id}/permissions` - Get permission overwrites
+- `PUT /channels/{id}/permissions` - Set permission overwrite
+- `DELETE /channels/{id}/permissions/{targetType}/{targetId}` - Remove overwrite
+
+---
+
+## Messages & Reactions
+
+### Fetching Messages
+- `GET /messages/channels/{channelId}/messages?limit=50&before={id}&after={id}`
+- `GET /messages/channels/{channelId}/messages/pinned`
+- `GET /messages/channels/{channelId}/messages/search?q={query}`
+
+### Sending & Editing
+- `POST /messages/channels/{channelId}/messages` - Send message
+- `PATCH /messages/{id}` - Edit message content
+- `DELETE /messages/{id}` - Delete message
+- `POST /messages/channels/{channelId}/messages/typing` - Send typing indicator
+
+**Send Message Request Body:**
 ```json
 {
   "content": "Hello world!",
   "replyToId": "uuid", // optional
-  "attachments": ["uuid", ...] // optional
+  "attachments": ["uuid", ...] // optional attachment IDs
 }
 ```
 
-### Edit Message
-`PATCH /messages/{id}`
+### Reactions & Pinning
+- `POST /messages/{id}/reactions` - Add reaction (`{"emoji": "�"}`)
+- `DELETE /messages/{id}/reactions/{emoji}` - Remove reaction
+- `POST /messages/{id}/pin` - Pin message
+- `DELETE /messages/{id}/pin` - Unpin message
 
-### Delete Message
-`DELETE /messages/{id}`
+---
 
-### Add Reaction
-`POST /messages/{id}/reactions`
+## Media & Uploads
 
-**Request Body:**
-```json
-{
-  "emoji": "🔥"
-}
-```
+Files are uploaded first to obtain an ID, which can then be attached to messages or used for profile assets.
 
-### Remove Reaction
-`DELETE /messages/{id}/reactions/{emoji}`
+### Attachments
+- `POST /media/attachments` - Upload a file (Multipart form, field: `file`)
+- `GET /media/attachments/{id}` - Get attachment metadata
+- `GET /media/attachments/{id}/download` - Get a temporary download URL
+
+### Avatars & Assets
+- `POST /media/avatars/user` - Upload user avatar (field: `avatar`)
+- `POST /media/avatars/community/{communityId}` - Upload community icon (field: `avatar`)
+- `POST /media/communities/{communityId}/banner` - Upload community banner (field: `banner`)
+
+### Limits & Supported Types
+- **Max File Sizes**:
+  - Avatars: 5MB
+  - Community Banners: 10MB
+  - Generic Attachments: 50MB
+  - Videos: 100MB
+- **Supported Formats**:
+  - Images: JPEG, PNG, GIF, WebP
+  - Videos: MP4, WebM, QuickTime
+  - Audio: MP3, OGG, WAV
+  - Documents: PDF, TXT, ZIP, RAR, 7Z
 
 ---
 
 ## WebSocket (Real-time)
 
-Connect to `/ws?token=<jwt>` to receive real-time updates.
+Connect to `/ws?token=<jwt>` to establish a persistent connection.
 
-### Supported Client Messages
-- `SUBSCRIBE`: `{"type": "SUBSCRIBE", "data": {"channelId": "..."}}`
-- `TYPING_START`: `{"type": "TYPING_START", "data": {"channelId": "..."}}`
-- `PRESENCE_UPDATE`: `{"type": "PRESENCE_UPDATE", "data": {"status": "online"}}`
+### Client Messages (Events)
+The client sends JSON messages in the format: `{"type": "EVENT_NAME", "data": { ... }}`
+
+- `SUBSCRIBE`: Subscribe to events for a specific channel.
+- `TYPING_START`: Indicate the user has started typing.
+- `PRESENCE_UPDATE`: Manually update presence status.
 
 ### Server Events
-- `READY`
-- `MESSAGE_CREATE`
-- `MESSAGE_UPDATE`
-- `MESSAGE_DELETE`
-- `TYPING_START`
-- `PRESENCE_UPDATE`
-- `REACTION_ADD` (Shared via message update or dedicated event)
+The server broadcasts events to relevant connected clients.
+
+- `READY`: Initial event upon connection, contains user session info.
+- `MESSAGE_CREATE`: A new message was sent.
+- `MESSAGE_UPDATE`: A message was edited, pinned, or reactions changed.
+- `MESSAGE_DELETE`: A message was removed.
+- `TYPING_START`: A user is typing in a channel.
+- `PRESENCE_UPDATE`: A user's online status changed.
+- `CHANNEL_CREATE/UPDATE/DELETE`: Channel-related changes.
+- `COMMUNITY_UPDATE`: Community configuration changes.
+
