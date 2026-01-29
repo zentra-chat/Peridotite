@@ -92,7 +92,7 @@ const (
 	PermissionAdministrator   int64 = 1 << 15
 
 	// Combined permission sets
-	PermissionAllText  int64 = PermissionViewChannels | PermissionSendMessages | PermissionAddReactions | PermissionAttachFiles
+	PermissionAllText  int64 = PermissionViewChannels | PermissionSendMessages | PermissionAddReactions | PermissionAttachFiles | PermissionCreateInvites
 	PermissionAllAdmin int64 = PermissionAdministrator | PermissionManageCommunity | PermissionManageChannels | PermissionManageRoles | PermissionManageMessages
 )
 

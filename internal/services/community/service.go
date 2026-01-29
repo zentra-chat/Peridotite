@@ -547,12 +547,29 @@ func (s *Service) GetInvites(ctx context.Context, communityID, userID uuid.UUID)
 		return nil, err
 	}
 
-	rows, err := s.db.Query(ctx,
-		`SELECT id, community_id, code, created_by, max_uses, use_count, expires_at, created_at
-		FROM community_invites WHERE community_id = $1
-		ORDER BY created_at DESC`,
-		communityID,
-	)
+	canManageAll := false
+	if s.requirePermission(ctx, communityID, userID, models.PermissionManageCommunity) == nil ||
+		s.requirePermission(ctx, communityID, userID, models.PermissionAdministrator) == nil {
+		canManageAll = true
+	}
+
+	var rows pgx.Rows
+	var err error
+	if canManageAll {
+		rows, err = s.db.Query(ctx,
+			`SELECT id, community_id, code, created_by, max_uses, use_count, expires_at, created_at
+			FROM community_invites WHERE community_id = $1
+			ORDER BY created_at DESC`,
+			communityID,
+		)
+	} else {
+		rows, err = s.db.Query(ctx,
+			`SELECT id, community_id, code, created_by, max_uses, use_count, expires_at, created_at
+			FROM community_invites WHERE community_id = $1 AND created_by = $2
+			ORDER BY created_at DESC`,
+			communityID, userID,
+		)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -576,9 +593,23 @@ func (s *Service) DeleteInvite(ctx context.Context, communityID, inviteID, userI
 		return err
 	}
 
+	canManageAll := false
+	if s.requirePermission(ctx, communityID, userID, models.PermissionManageCommunity) == nil ||
+		s.requirePermission(ctx, communityID, userID, models.PermissionAdministrator) == nil {
+		canManageAll = true
+	}
+
+	if canManageAll {
+		_, err := s.db.Exec(ctx,
+			`DELETE FROM community_invites WHERE id = $1 AND community_id = $2`,
+			inviteID, communityID,
+		)
+		return err
+	}
+
 	_, err := s.db.Exec(ctx,
-		`DELETE FROM community_invites WHERE id = $1 AND community_id = $2`,
-		inviteID, communityID,
+		`DELETE FROM community_invites WHERE id = $1 AND community_id = $2 AND created_by = $3`,
+		inviteID, communityID, userID,
 	)
 	return err
 }
