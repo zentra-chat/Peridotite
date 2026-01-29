@@ -231,7 +231,22 @@ func (s *Service) UploadAvatar(ctx context.Context, ownerID uuid.UUID, ownerType
 		return "", fmt.Errorf("failed to upload avatar: %w", err)
 	}
 
-	return s.getPublicURL(s.bucketAvatars, objectName), nil
+	url := s.getPublicURL(s.bucketAvatars, objectName)
+
+	// Update the database record
+	if ownerType == "users" {
+		_, err = s.db.Exec(ctx, "UPDATE users SET avatar_url = $1, updated_at = NOW() WHERE id = $2", url, ownerID)
+		if err != nil {
+			return "", fmt.Errorf("failed to update user avatar: %w", err)
+		}
+	} else if ownerType == "communities" {
+		_, err = s.db.Exec(ctx, "UPDATE communities SET avatar_url = $1, updated_at = NOW() WHERE id = $2", url, ownerID)
+		if err != nil {
+			return "", fmt.Errorf("failed to update community avatar: %w", err)
+		}
+	}
+
+	return url, nil
 }
 
 // UploadCommunityAsset handles community banner/icon uploads
@@ -262,7 +277,25 @@ func (s *Service) UploadCommunityAsset(ctx context.Context, communityID uuid.UUI
 		return "", fmt.Errorf("failed to upload asset: %w", err)
 	}
 
-	return s.getPublicURL(s.bucketCommunity, objectName), nil
+	url := s.getPublicURL(s.bucketCommunity, objectName)
+
+	// Update the database record
+	var column string
+	if assetType == "banner" {
+		column = "banner_url"
+	} else if assetType == "icon" {
+		column = "icon_url"
+	}
+
+	if column != "" {
+		query := fmt.Sprintf("UPDATE communities SET %s = $1, updated_at = NOW() WHERE id = $2", column)
+		_, err = s.db.Exec(ctx, query, url, communityID)
+		if err != nil {
+			return "", fmt.Errorf("failed to update community %s: %w", assetType, err)
+		}
+	}
+
+	return url, nil
 }
 
 // getPublicURL constructs a public URL for an object

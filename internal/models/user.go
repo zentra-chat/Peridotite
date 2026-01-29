@@ -71,6 +71,7 @@ type PublicUser struct {
 	Bio          *string    `json:"bio,omitempty"`
 	Status       UserStatus `json:"status"`
 	CustomStatus *string    `json:"customStatus,omitempty"`
+	CreatedAt    time.Time  `json:"createdAt"`
 }
 
 func (u *User) ToPublic() *PublicUser {
@@ -82,5 +83,6 @@ func (u *User) ToPublic() *PublicUser {
 		Bio:          u.Bio,
 		Status:       u.Status,
 		CustomStatus: u.CustomStatus,
+		CreatedAt:    u.CreatedAt,
 	}
 }

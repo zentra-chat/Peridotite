@@ -191,7 +191,7 @@ func (h *Handler) UploadUserAvatar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	utils.RespondSuccess(w, map[string]string{"avatarUrl": url})
+	utils.RespondSuccess(w, map[string]string{"url": url})
 }
 
 func (h *Handler) UploadCommunityAvatar(w http.ResponseWriter, r *http.Request) {
@@ -239,7 +239,7 @@ func (h *Handler) UploadCommunityAvatar(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	utils.RespondSuccess(w, map[string]string{"avatarUrl": url})
+	utils.RespondSuccess(w, map[string]string{"url": url})
 }
 
 func (h *Handler) UploadCommunityBanner(w http.ResponseWriter, r *http.Request) {
@@ -292,7 +292,7 @@ func (h *Handler) UploadCommunityBanner(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	utils.RespondSuccess(w, map[string]string{"bannerUrl": url})
+	utils.RespondSuccess(w, map[string]string{"url": url})
 }
 
 func (h *Handler) UploadCommunityIcon(w http.ResponseWriter, r *http.Request) {
@@ -345,5 +345,5 @@ func (h *Handler) UploadCommunityIcon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	utils.RespondSuccess(w, map[string]string{"iconUrl": url})
+	utils.RespondSuccess(w, map[string]string{"url": url})
 }

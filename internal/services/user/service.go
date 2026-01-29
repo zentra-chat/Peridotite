@@ -62,12 +62,12 @@ func (s *Service) GetPublicUser(ctx context.Context, id uuid.UUID) (*models.Publ
 func (s *Service) GetUserByUsername(ctx context.Context, username string) (*models.PublicUser, error) {
 	user := &models.User{}
 	err := s.db.QueryRow(ctx,
-		`SELECT id, username, display_name, avatar_url, bio, status, custom_status
+		`SELECT id, username, display_name, avatar_url, bio, status, custom_status, created_at
 		FROM users WHERE username = $1 AND deleted_at IS NULL`,
 		username,
 	).Scan(
 		&user.ID, &user.Username, &user.DisplayName, &user.AvatarURL,
-		&user.Bio, &user.Status, &user.CustomStatus,
+		&user.Bio, &user.Status, &user.CustomStatus, &user.CreatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -109,6 +109,14 @@ func (s *Service) UpdateAvatar(ctx context.Context, userID uuid.UUID, avatarURL 
 	return err
 }
 
+func (s *Service) RemoveAvatar(ctx context.Context, userID uuid.UUID) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE users SET avatar_url = NULL, updated_at = NOW() WHERE id = $1`,
+		userID,
+	)
+	return err
+}
+
 func (s *Service) UpdateStatus(ctx context.Context, userID uuid.UUID, status models.UserStatus) error {
 	_, err := s.db.Exec(ctx,
 		`UPDATE users SET status = $2, updated_at = NOW() WHERE id = $1`,
@@ -138,7 +146,7 @@ func (s *Service) SearchUsers(ctx context.Context, query string, limit, offset i
 	}
 
 	rows, err := s.db.Query(ctx,
-		`SELECT id, username, display_name, avatar_url, bio, status, custom_status
+		`SELECT id, username, display_name, avatar_url, bio, status, custom_status, created_at
 		FROM users 
 		WHERE deleted_at IS NULL AND (username ILIKE $1 OR display_name ILIKE $1)
 		ORDER BY username
@@ -155,7 +163,7 @@ func (s *Service) SearchUsers(ctx context.Context, query string, limit, offset i
 		user := &models.PublicUser{}
 		err := rows.Scan(
 			&user.ID, &user.Username, &user.DisplayName, &user.AvatarURL,
-			&user.Bio, &user.Status, &user.CustomStatus,
+			&user.Bio, &user.Status, &user.CustomStatus, &user.CreatedAt,
 		)
 		if err != nil {
 			return nil, 0, err
