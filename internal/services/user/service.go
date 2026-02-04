@@ -2,12 +2,14 @@ package user
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	"github.com/rs/zerolog/log"
 	"github.com/zentra/peridotite/internal/models"
 	"github.com/zentra/peridotite/pkg/database"
 )
@@ -27,6 +29,35 @@ func NewService(db *pgxpool.Pool, redis *redis.Client) *Service {
 	return &Service{
 		db:    db,
 		redis: redis,
+	}
+}
+
+func (s *Service) broadcast(ctx context.Context, userID uuid.UUID, eventType string, data interface{}) {
+	event := struct {
+		Type string      `json:"type"`
+		Data interface{} `json:"data"`
+	}{
+		Type: eventType,
+		Data: data,
+	}
+
+	broadcast := struct {
+		ChannelID string      `json:"channelId"`
+		Event     interface{} `json:"event"`
+	}{
+		ChannelID: "", // Global broadcast
+		Event:     event,
+	}
+
+	jsonData, err := json.Marshal(broadcast)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to marshal user update broadcast")
+		return
+	}
+
+	err = s.redis.Publish(ctx, "websocket:broadcast", jsonData).Err()
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to publish user update to Redis")
 	}
 }
 
@@ -98,7 +129,12 @@ func (s *Service) UpdateProfile(ctx context.Context, userID uuid.UUID, req *Upda
 		return nil, err
 	}
 
-	return s.GetUserByID(ctx, userID)
+	user, err := s.GetUserByID(ctx, userID)
+	if err == nil {
+		s.broadcast(ctx, userID, "USER_UPDATE", user)
+	}
+
+	return user, err
 }
 
 func (s *Service) UpdateAvatar(ctx context.Context, userID uuid.UUID, avatarURL string) error {
@@ -106,6 +142,11 @@ func (s *Service) UpdateAvatar(ctx context.Context, userID uuid.UUID, avatarURL 
 		`UPDATE users SET avatar_url = $2, updated_at = NOW() WHERE id = $1`,
 		userID, avatarURL,
 	)
+	if err == nil {
+		if user, err := s.GetUserByID(ctx, userID); err == nil {
+			s.broadcast(ctx, userID, "USER_UPDATE", user)
+		}
+	}
 	return err
 }
 
@@ -114,6 +155,11 @@ func (s *Service) RemoveAvatar(ctx context.Context, userID uuid.UUID) error {
 		`UPDATE users SET avatar_url = NULL, updated_at = NOW() WHERE id = $1`,
 		userID,
 	)
+	if err == nil {
+		if user, err := s.GetUserByID(ctx, userID); err == nil {
+			s.broadcast(ctx, userID, "USER_UPDATE", user)
+		}
+	}
 	return err
 }
 
@@ -124,6 +170,15 @@ func (s *Service) UpdateStatus(ctx context.Context, userID uuid.UUID, status mod
 	)
 	if err != nil {
 		return err
+	}
+
+	if user, err := s.GetUserByID(ctx, userID); err == nil {
+		s.broadcast(ctx, userID, "USER_UPDATE", user)
+		// Also send explicit presence update
+		s.broadcast(ctx, userID, "PRESENCE_UPDATE", map[string]interface{}{
+			"userId": userID.String(),
+			"status": string(status),
+		})
 	}
 
 	// Also update Redis presence

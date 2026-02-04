@@ -220,7 +220,8 @@ func (s *Service) UploadAvatar(ctx context.Context, ownerID uuid.UUID, ownerType
 		ext = ".jpg"
 	}
 
-	objectName := fmt.Sprintf("%s%s", ownerID.String(), ext)
+	// Include timestamp to ensure unique URL for cache busting
+	objectName := fmt.Sprintf("%s-%d%s", ownerID.String(), time.Now().Unix(), ext)
 
 	// Upload to MinIO
 	_, err = s.minio.PutObject(ctx, s.bucketAvatars, objectName, bytes.NewReader(processedData), int64(len(processedData)),
@@ -267,7 +268,8 @@ func (s *Service) UploadCommunityAsset(ctx context.Context, communityID uuid.UUI
 	}
 
 	ext := filepath.Ext(header.Filename)
-	objectName := fmt.Sprintf("%s-%s%s", communityID.String(), assetType, ext)
+	// Include timestamp to ensure unique URL for cache busting
+	objectName := fmt.Sprintf("%s-%s-%d%s", communityID.String(), assetType, time.Now().Unix(), ext)
 
 	_, err = s.minio.PutObject(ctx, s.bucketCommunity, objectName, bytes.NewReader(fileData), int64(len(fileData)),
 		minio.PutObjectOptions{

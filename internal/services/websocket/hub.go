@@ -17,23 +17,25 @@ import (
 
 // Event types
 const (
-	EventTypeMessage        = "MESSAGE_CREATE"
-	EventTypeMessageUpdate  = "MESSAGE_UPDATE"
-	EventTypeMessageDelete  = "MESSAGE_DELETE"
-	EventTypeTypingStart    = "TYPING_START"
-	EventTypePresenceUpdate = "PRESENCE_UPDATE"
-	EventTypeChannelCreate  = "CHANNEL_CREATE"
-	EventTypeChannelUpdate  = "CHANNEL_UPDATE"
-	EventTypeChannelDelete  = "CHANNEL_DELETE"
-	EventTypeMemberJoin     = "MEMBER_JOIN"
-	EventTypeMemberLeave    = "MEMBER_LEAVE"
-	EventTypeMemberUpdate   = "MEMBER_UPDATE"
-	EventTypeReactionAdd    = "REACTION_ADD"
-	EventTypeReactionRemove = "REACTION_REMOVE"
-	EventTypeVoiceState     = "VOICE_STATE_UPDATE"
-	EventTypeReady          = "READY"
-	EventTypeHeartbeat      = "HEARTBEAT"
-	EventTypeHeartbeatAck   = "HEARTBEAT_ACK"
+	EventTypeMessage         = "MESSAGE_CREATE"
+	EventTypeMessageUpdate   = "MESSAGE_UPDATE"
+	EventTypeMessageDelete   = "MESSAGE_DELETE"
+	EventTypeTypingStart     = "TYPING_START"
+	EventTypePresenceUpdate  = "PRESENCE_UPDATE"
+	EventTypeChannelCreate   = "CHANNEL_CREATE"
+	EventTypeChannelUpdate   = "CHANNEL_UPDATE"
+	EventTypeChannelDelete   = "CHANNEL_DELETE"
+	EventTypeMemberJoin      = "MEMBER_JOIN"
+	EventTypeMemberLeave     = "MEMBER_LEAVE"
+	EventTypeMemberUpdate    = "MEMBER_UPDATE"
+	EventTypeReactionAdd     = "REACTION_ADD"
+	EventTypeReactionRemove  = "REACTION_REMOVE"
+	EventTypeVoiceState      = "VOICE_STATE_UPDATE"
+	EventTypeCommunityUpdate = "COMMUNITY_UPDATE"
+	EventTypeUserUpdate      = "USER_UPDATE"
+	EventTypeReady           = "READY"
+	EventTypeHeartbeat       = "HEARTBEAT"
+	EventTypeHeartbeatAck    = "HEARTBEAT_ACK"
 )
 
 // Client represents a WebSocket client connection
@@ -170,14 +172,6 @@ func (h *Hub) unregisterClient(client *Client) {
 }
 
 func (h *Hub) broadcastToChannel(msg *BroadcastMessage) {
-	h.mu.RLock()
-	clients, ok := h.channels[msg.ChannelID]
-	h.mu.RUnlock()
-
-	if !ok {
-		return
-	}
-
 	data, err := json.Marshal(msg.Event)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to marshal broadcast event")
@@ -186,6 +180,26 @@ func (h *Hub) broadcastToChannel(msg *BroadcastMessage) {
 
 	h.mu.RLock()
 	defer h.mu.RUnlock()
+
+	// If ChannelID is empty, broadcast to all connected clients
+	if msg.ChannelID == "" {
+		for clientID, client := range h.clients {
+			if msg.ExcludeClientID != nil && clientID == *msg.ExcludeClientID {
+				continue
+			}
+			select {
+			case client.Send <- data:
+			default:
+				log.Warn().Str("clientId", clientID.String()).Msg("Client send buffer full")
+			}
+		}
+		return
+	}
+
+	clients, ok := h.channels[msg.ChannelID]
+	if !ok {
+		return
+	}
 
 	for clientID := range clients {
 		if msg.ExcludeClientID != nil && clientID == *msg.ExcludeClientID {

@@ -9,6 +9,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
+	"github.com/rs/zerolog/log"
 	"github.com/zentra/peridotite/internal/models"
 	"github.com/zentra/peridotite/pkg/auth"
 	"github.com/zentra/peridotite/pkg/database"
@@ -26,11 +28,12 @@ var (
 )
 
 type Service struct {
-	db *pgxpool.Pool
+	db    *pgxpool.Pool
+	redis *redis.Client
 }
 
-func NewService(db *pgxpool.Pool) *Service {
-	return &Service{db: db}
+func NewService(db *pgxpool.Pool, redis *redis.Client) *Service {
+	return &Service{db: db, redis: redis}
 }
 
 type CreateCommunityRequest struct {
@@ -38,6 +41,35 @@ type CreateCommunityRequest struct {
 	Description *string `json:"description" validate:"omitempty,max=1000"`
 	IsPublic    bool    `json:"isPublic"`
 	IsOpen      bool    `json:"isOpen"`
+}
+
+func (s *Service) broadcast(ctx context.Context, communityID uuid.UUID, eventType string, data interface{}) {
+	event := struct {
+		Type string      `json:"type"`
+		Data interface{} `json:"data"`
+	}{
+		Type: eventType,
+		Data: data,
+	}
+
+	broadcast := struct {
+		ChannelID string      `json:"channelId"`
+		Event     interface{} `json:"event"`
+	}{
+		ChannelID: "", // Global broadcast for now
+		Event:     event,
+	}
+
+	jsonData, err := json.Marshal(broadcast)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to marshal community update broadcast")
+		return
+	}
+
+	err = s.redis.Publish(ctx, "websocket:broadcast", jsonData).Err()
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to publish community update to Redis")
+	}
 }
 
 func (s *Service) CreateCommunity(ctx context.Context, ownerID uuid.UUID, req *CreateCommunityRequest) (*models.Community, error) {
@@ -237,7 +269,12 @@ func (s *Service) UpdateCommunity(ctx context.Context, communityID, userID uuid.
 		return nil, err
 	}
 
-	return s.GetCommunity(ctx, communityID)
+	community, err := s.GetCommunity(ctx, communityID)
+	if err == nil {
+		s.broadcast(ctx, communityID, "COMMUNITY_UPDATE", community)
+	}
+
+	return community, err
 }
 
 func (s *Service) UpdateCommunityIcon(ctx context.Context, communityID, userID uuid.UUID, iconURL string) error {
@@ -249,6 +286,11 @@ func (s *Service) UpdateCommunityIcon(ctx context.Context, communityID, userID u
 		`UPDATE communities SET icon_url = $2, updated_at = NOW() WHERE id = $1`,
 		communityID, iconURL,
 	)
+	if err == nil {
+		if community, err := s.GetCommunity(ctx, communityID); err == nil {
+			s.broadcast(ctx, communityID, "COMMUNITY_UPDATE", community)
+		}
+	}
 	return err
 }
 
@@ -261,6 +303,11 @@ func (s *Service) UpdateCommunityBanner(ctx context.Context, communityID, userID
 		`UPDATE communities SET banner_url = $2, updated_at = NOW() WHERE id = $1`,
 		communityID, bannerURL,
 	)
+	if err == nil {
+		if community, err := s.GetCommunity(ctx, communityID); err == nil {
+			s.broadcast(ctx, communityID, "COMMUNITY_UPDATE", community)
+		}
+	}
 	return err
 }
 
@@ -273,6 +320,11 @@ func (s *Service) RemoveCommunityIcon(ctx context.Context, communityID, userID u
 		`UPDATE communities SET icon_url = NULL, updated_at = NOW() WHERE id = $1`,
 		communityID,
 	)
+	if err == nil {
+		if community, err := s.GetCommunity(ctx, communityID); err == nil {
+			s.broadcast(ctx, communityID, "COMMUNITY_UPDATE", community)
+		}
+	}
 	return err
 }
 
@@ -285,6 +337,11 @@ func (s *Service) RemoveCommunityBanner(ctx context.Context, communityID, userID
 		`UPDATE communities SET banner_url = NULL, updated_at = NOW() WHERE id = $1`,
 		communityID,
 	)
+	if err == nil {
+		if community, err := s.GetCommunity(ctx, communityID); err == nil {
+			s.broadcast(ctx, communityID, "COMMUNITY_UPDATE", community)
+		}
+	}
 	return err
 }
 

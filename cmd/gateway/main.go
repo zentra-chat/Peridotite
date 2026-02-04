@@ -73,7 +73,7 @@ func main() {
 	// Initialize services
 	authService := auth.NewService(db, redisClient, cfg.JWT.Secret, cfg.JWT.AccessTTL, cfg.JWT.RefreshTTL)
 	userService := user.NewService(db, redisClient)
-	communityService := community.NewService(db)
+	communityService := community.NewService(db, redisClient)
 	channelService := channel.NewService(db, communityService)
 	messageService := message.NewService(db, redisClient, encKey, channelService)
 	mediaService := media.NewService(db, minioClient, [3]string{cfg.Storage.BucketAttachments, cfg.Storage.BucketAvatars, cfg.Storage.BucketCommunity}, cfg.Storage.CDNBaseURL, communityService)
