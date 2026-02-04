@@ -80,7 +80,7 @@ func (s *Service) CreateCommunity(ctx context.Context, ownerID uuid.UUID, req *C
 		OwnerID:     ownerID,
 		IsPublic:    req.IsPublic,
 		IsOpen:      req.IsOpen,
-		MemberCount: 1,
+		MemberCount: 0, // Trigger on community_members will increment to 1
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
 	}
