@@ -294,7 +294,7 @@ func (s *Service) UnblockUser(ctx context.Context, blockerID, blockedID uuid.UUI
 
 func (s *Service) GetBlockedUsers(ctx context.Context, userID uuid.UUID) ([]*models.PublicUser, error) {
 	rows, err := s.db.Query(ctx,
-		`SELECT u.id, u.username, u.display_name, u.avatar_url, u.bio, u.status, u.custom_status
+		`SELECT u.id, u.username, u.display_name, u.avatar_url, u.bio, u.status, u.custom_status, u.created_at
 		FROM user_blocks b
 		JOIN users u ON u.id = b.blocked_id
 		WHERE b.blocker_id = $1`,
@@ -310,7 +310,7 @@ func (s *Service) GetBlockedUsers(ctx context.Context, userID uuid.UUID) ([]*mod
 		user := &models.PublicUser{}
 		err := rows.Scan(
 			&user.ID, &user.Username, &user.DisplayName, &user.AvatarURL,
-			&user.Bio, &user.Status, &user.CustomStatus,
+			&user.Bio, &user.Status, &user.CustomStatus, &user.CreatedAt,
 		)
 		if err != nil {
 			return nil, err

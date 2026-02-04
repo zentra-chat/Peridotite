@@ -339,7 +339,7 @@ func (s *Service) GetMembers(ctx context.Context, communityID uuid.UUID, limit, 
 
 	rows, err := s.db.Query(ctx,
 		`SELECT cm.id, cm.community_id, cm.user_id, cm.nickname, cm.role, cm.joined_at,
-		u.id, u.username, u.display_name, u.avatar_url, u.bio, u.status, u.custom_status
+		u.id, u.username, u.display_name, u.avatar_url, u.bio, u.status, u.custom_status, u.created_at
 		FROM community_members cm
 		JOIN users u ON u.id = cm.user_id
 		WHERE cm.community_id = $1
@@ -358,7 +358,7 @@ func (s *Service) GetMembers(ctx context.Context, communityID uuid.UUID, limit, 
 		u := &models.PublicUser{}
 		err := rows.Scan(
 			&m.ID, &m.CommunityID, &m.UserID, &m.Nickname, &m.Role, &m.JoinedAt,
-			&u.ID, &u.Username, &u.DisplayName, &u.AvatarURL, &u.Bio, &u.Status, &u.CustomStatus,
+			&u.ID, &u.Username, &u.DisplayName, &u.AvatarURL, &u.Bio, &u.Status, &u.CustomStatus, &u.CreatedAt,
 		)
 		if err != nil {
 			return nil, 0, err
