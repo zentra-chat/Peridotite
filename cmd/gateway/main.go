@@ -20,6 +20,7 @@ import (
 	"github.com/zentra/peridotite/internal/services/auth"
 	"github.com/zentra/peridotite/internal/services/channel"
 	"github.com/zentra/peridotite/internal/services/community"
+	"github.com/zentra/peridotite/internal/services/dm"
 	"github.com/zentra/peridotite/internal/services/media"
 	"github.com/zentra/peridotite/internal/services/message"
 	"github.com/zentra/peridotite/internal/services/user"
@@ -76,10 +77,11 @@ func main() {
 	communityService := community.NewService(db, redisClient)
 	channelService := channel.NewService(db, communityService)
 	messageService := message.NewService(db, redisClient, encKey, channelService)
+	dmService := dm.NewService(db, redisClient, encKey, userService)
 	mediaService := media.NewService(db, minioClient, [3]string{cfg.Storage.BucketAttachments, cfg.Storage.BucketAvatars, cfg.Storage.BucketCommunity}, cfg.Storage.CDNBaseURL, communityService)
 
 	// Initialize WebSocket hub
-	wsHub := websocket.NewHub(redisClient, channelService, userService)
+	wsHub := websocket.NewHub(redisClient, channelService, userService, dmService)
 	go wsHub.Run(context.Background())
 
 	// Initialize handlers
@@ -88,6 +90,7 @@ func main() {
 	communityHandler := community.NewHandler(communityService)
 	channelHandler := channel.NewHandler(channelService)
 	messageHandler := message.NewHandler(messageService)
+	dmHandler := dm.NewHandler(dmService)
 	mediaHandler := media.NewHandler(mediaService)
 	wsHandler := websocket.NewHandler(wsHub, cfg.JWT.Secret)
 
@@ -139,6 +142,7 @@ func main() {
 			r.Mount("/users", userHandler.Routes())
 			r.Mount("/channels", channelHandler.Routes())
 			r.Mount("/messages", messageHandler.Routes())
+			r.Mount("/dms", dmHandler.Routes())
 			r.Mount("/media", mediaHandler.Routes())
 		})
 	})

@@ -154,7 +154,7 @@ func (c *Client) handleSubscribe(data json.RawMessage) {
 		return
 	}
 
-	if !c.Hub.channelService.CanAccessChannel(context.Background(), channelID, c.UserID) {
+	if !c.canAccessStream(context.Background(), channelID) {
 		log.Warn().
 			Str("channelId", req.ChannelID).
 			Str("userId", c.UserID.String()).
@@ -189,11 +189,21 @@ func (c *Client) handleTypingStart(data json.RawMessage) {
 		return
 	}
 
-	if !c.Hub.channelService.CanAccessChannel(context.Background(), channelID, c.UserID) {
+	if !c.canAccessStream(context.Background(), channelID) {
 		return
 	}
 
 	c.Hub.SetTyping(context.Background(), req.ChannelID, c.UserID)
+}
+
+func (c *Client) canAccessStream(ctx context.Context, channelID uuid.UUID) bool {
+	if c.Hub.channelService != nil && c.Hub.channelService.CanAccessChannel(ctx, channelID, c.UserID) {
+		return true
+	}
+	if c.Hub.dmService != nil && c.Hub.dmService.CanAccessConversation(ctx, channelID, c.UserID) {
+		return true
+	}
+	return false
 }
 
 func (c *Client) handleHeartbeat() {

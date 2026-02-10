@@ -12,6 +12,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 	"github.com/zentra/peridotite/internal/services/channel"
+	"github.com/zentra/peridotite/internal/services/dm"
 	"github.com/zentra/peridotite/internal/services/user"
 )
 
@@ -33,6 +34,9 @@ const (
 	EventTypeVoiceState      = "VOICE_STATE_UPDATE"
 	EventTypeCommunityUpdate = "COMMUNITY_UPDATE"
 	EventTypeUserUpdate      = "USER_UPDATE"
+	EventTypeDMMessage       = "DM_MESSAGE_CREATE"
+	EventTypeDMMessageUpdate = "DM_MESSAGE_UPDATE"
+	EventTypeDMMessageDelete = "DM_MESSAGE_DELETE"
 	EventTypeReady           = "READY"
 	EventTypeHeartbeat       = "HEARTBEAT"
 	EventTypeHeartbeatAck    = "HEARTBEAT_ACK"
@@ -61,6 +65,7 @@ type Hub struct {
 	redis          *redis.Client
 	channelService *channel.Service
 	userService    *user.Service
+	dmService      *dm.Service
 	mu             sync.RWMutex
 }
 
@@ -83,7 +88,7 @@ type ClientMessage struct {
 	Data json.RawMessage `json:"data"`
 }
 
-func NewHub(redisClient *redis.Client, channelService *channel.Service, userService *user.Service) *Hub {
+func NewHub(redisClient *redis.Client, channelService *channel.Service, userService *user.Service, dmService *dm.Service) *Hub {
 	return &Hub{
 		clients:        make(map[uuid.UUID]*Client),
 		userClients:    make(map[uuid.UUID][]*Client),
@@ -94,6 +99,7 @@ func NewHub(redisClient *redis.Client, channelService *channel.Service, userServ
 		redis:          redisClient,
 		channelService: channelService,
 		userService:    userService,
+		dmService:      dmService,
 	}
 }
 
