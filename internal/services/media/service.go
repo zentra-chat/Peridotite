@@ -29,6 +29,7 @@ var (
 	ErrInvalidFileType    = errors.New("invalid file type")
 	ErrUploadFailed       = errors.New("upload failed")
 	ErrAttachmentNotFound = errors.New("attachment not found")
+	ErrNotParticipant     = errors.New("not a participant")
 )
 
 // File size limits
@@ -179,6 +180,90 @@ func (s *Service) UploadAttachment(ctx context.Context, userID, channelID uuid.U
 	)
 	if err != nil {
 		// Cleanup uploaded file
+		s.minio.RemoveObject(ctx, s.bucketAttachments, objectName, minio.RemoveObjectOptions{})
+		return nil, fmt.Errorf("failed to save attachment record: %w", err)
+	}
+
+	return &UploadResult{
+		ID:           attachment.ID,
+		Filename:     attachment.Filename,
+		ContentType:  *attachment.ContentType,
+		Size:         attachment.FileSize,
+		URL:          attachment.FileURL,
+		ThumbnailURL: attachment.ThumbnailURL,
+	}, nil
+}
+
+// UploadDmAttachment handles file uploads for DM attachments
+func (s *Service) UploadDmAttachment(ctx context.Context, userID, conversationID uuid.UUID, file multipart.File, header *multipart.FileHeader) (*UploadResult, error) {
+	contentType := header.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	// Validate file type and size
+	maxSize := s.getMaxSizeForType(contentType)
+	if header.Size > maxSize {
+		return nil, ErrFileTooLarge
+	}
+
+	if !s.isAllowedType(contentType) {
+		return nil, ErrInvalidFileType
+	}
+
+	if !s.canAccessDmConversation(ctx, conversationID, userID) {
+		return nil, ErrNotParticipant
+	}
+
+	fileData, err := io.ReadAll(file)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file: %w", err)
+	}
+
+	ext := filepath.Ext(header.Filename)
+	attachmentID := uuid.New()
+	objectName := fmt.Sprintf("dm/%s/%s%s", conversationID.String(), attachmentID.String(), ext)
+
+	_, err = s.minio.PutObject(ctx, s.bucketAttachments, objectName, bytes.NewReader(fileData), int64(len(fileData)),
+		minio.PutObjectOptions{
+			ContentType: contentType,
+		})
+	if err != nil {
+		return nil, fmt.Errorf("failed to upload file: %w", err)
+	}
+
+	fileURL := s.getPublicURL(s.bucketAttachments, objectName)
+
+	var thumbnailURL *string
+	if AllowedImageTypes[contentType] {
+		thumbURL, err := s.generateDmThumbnail(ctx, fileData, attachmentID, conversationID)
+		if err == nil {
+			thumbnailURL = &thumbURL
+		}
+	}
+
+	contentTypePtr := &contentType
+	attachment := &models.MessageAttachment{
+		ID:           attachmentID,
+		UploaderID:   userID,
+		Filename:     header.Filename,
+		ContentType:  contentTypePtr,
+		FileSize:     header.Size,
+		FileURL:      fileURL,
+		ThumbnailURL: thumbnailURL,
+		CreatedAt:    time.Now(),
+	}
+
+	query := `
+		INSERT INTO message_attachments (id, uploader_id, filename, content_type, file_size, file_url, thumbnail_url, created_at, dm_conversation_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`
+
+	_, err = s.db.Exec(ctx, query,
+		attachment.ID, attachment.UploaderID, attachment.Filename,
+		attachment.ContentType, attachment.FileSize, attachment.FileURL,
+		attachment.ThumbnailURL, attachment.CreatedAt, conversationID,
+	)
+	if err != nil {
 		s.minio.RemoveObject(ctx, s.bucketAttachments, objectName, minio.RemoveObjectOptions{})
 		return nil, fmt.Errorf("failed to save attachment record: %w", err)
 	}
@@ -426,6 +511,15 @@ func (s *Service) isAllowedType(contentType string) bool {
 		AllowedDocumentTypes[contentType]
 }
 
+func (s *Service) canAccessDmConversation(ctx context.Context, conversationID, userID uuid.UUID) bool {
+	var exists bool
+	err := s.db.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM dm_participants WHERE conversation_id = $1 AND user_id = $2)`,
+		conversationID, userID,
+	).Scan(&exists)
+	return err == nil && exists
+}
+
 // generateThumbnail creates a thumbnail for image attachments
 // Currently, only JPEG thumbnails are generated.
 // I need to modify this later to support PNG's with transparency.
@@ -446,6 +540,32 @@ func (s *Service) generateThumbnail(ctx context.Context, imageData []byte, attac
 
 	// Store thumbnails in: community/channel/thumbs/filename
 	thumbObjectName := fmt.Sprintf("%s/%s/thumbs/%s_thumb.jpg", communityID.String(), channelID.String(), attachmentID.String())
+
+	_, err = s.minio.PutObject(ctx, s.bucketAttachments, thumbObjectName, &buf, int64(buf.Len()),
+		minio.PutObjectOptions{
+			ContentType: "image/jpeg",
+		})
+	if err != nil {
+		return "", err
+	}
+
+	return s.getPublicURL(s.bucketAttachments, thumbObjectName), nil
+}
+
+func (s *Service) generateDmThumbnail(ctx context.Context, imageData []byte, attachmentID, conversationID uuid.UUID) (string, error) {
+	img, _, err := image.Decode(bytes.NewReader(imageData))
+	if err != nil {
+		return "", err
+	}
+
+	thumb := resize.Thumbnail(ThumbnailMaxWidth, ThumbnailMaxHeight, img, resize.Lanczos3)
+
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, thumb, &jpeg.Options{Quality: 80}); err != nil {
+		return "", err
+	}
+
+	thumbObjectName := fmt.Sprintf("dm/%s/thumbs/%s_thumb.jpg", conversationID.String(), attachmentID.String())
 
 	_, err = s.minio.PutObject(ctx, s.bucketAttachments, thumbObjectName, &buf, int64(buf.Len()),
 		minio.PutObjectOptions{

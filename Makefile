@@ -83,7 +83,8 @@ docker-logs:
 ## migrate-up: Run database migrations
 migrate-up:
 	@echo "Running migrations..."
-	@source .env && psql $$DATABASE_URL < migrations/000001_initial_schema.up.sql
+	@chmod +x scripts/migrate.sh
+	@source .env && ./scripts/migrate.sh
 
 ## migrate-down: Rollback database migrations
 migrate-down:

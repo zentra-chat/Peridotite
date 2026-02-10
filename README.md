@@ -40,7 +40,7 @@ Peridotite is the backend server for Zentra, an encrypted community chat applica
 4. **Run migrations**
    ```bash
    # Apply migrations
-   psql $DATABASE_URL < migrations/000001_initial_schema.up.sql
+   make migrate-up
    ```
 
 5. **Start the server**

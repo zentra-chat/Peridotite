@@ -26,6 +26,7 @@ var (
 	ErrMessageNotFound      = errors.New("message not found")
 	ErrNotMessageOwner      = errors.New("not message owner")
 	ErrBlocked              = errors.New("user is blocked")
+	ErrInvalidAttachment    = errors.New("invalid attachment")
 )
 
 type Service struct {
@@ -54,7 +55,8 @@ type CreateConversationRequest struct {
 }
 
 type SendMessageRequest struct {
-	Content string `json:"content" validate:"required,max=4000"`
+	Content     string      `json:"content" validate:"required_without=Attachments,max=4000"`
+	Attachments []uuid.UUID `json:"attachments,omitempty" validate:"max=10"`
 }
 
 type UpdateMessageRequest struct {
@@ -62,14 +64,15 @@ type UpdateMessageRequest struct {
 }
 
 type DMMessageResponse struct {
-	ID             uuid.UUID          `json:"id"`
-	ConversationID uuid.UUID          `json:"conversationId"`
-	SenderID       uuid.UUID          `json:"senderId"`
-	Content        string             `json:"content"`
-	IsEdited       bool               `json:"isEdited"`
-	CreatedAt      time.Time          `json:"createdAt"`
-	UpdatedAt      time.Time          `json:"updatedAt"`
-	Sender         *models.PublicUser `json:"sender,omitempty"`
+	ID             uuid.UUID                  `json:"id"`
+	ConversationID uuid.UUID                  `json:"conversationId"`
+	SenderID       uuid.UUID                  `json:"senderId"`
+	Content        string                     `json:"content"`
+	IsEdited       bool                       `json:"isEdited"`
+	Attachments    []models.MessageAttachment `json:"attachments,omitempty"`
+	CreatedAt      time.Time                  `json:"createdAt"`
+	UpdatedAt      time.Time                  `json:"updatedAt"`
+	Sender         *models.PublicUser         `json:"sender,omitempty"`
 }
 
 type DMConversationResponse struct {
@@ -303,6 +306,7 @@ func (s *Service) GetMessages(ctx context.Context, conversationID, userID uuid.U
 	defer rows.Close()
 
 	var messages []*DMMessageResponse
+	messageIDs := make([]uuid.UUID, 0)
 	for rows.Next() {
 		var msg models.DirectMessage
 		var nonce []byte
@@ -331,6 +335,16 @@ func (s *Service) GetMessages(ctx context.Context, conversationID, userID uuid.U
 			UpdatedAt:      msg.UpdatedAt,
 			Sender:         &sender,
 		})
+		messageIDs = append(messageIDs, msg.ID)
+	}
+
+	if len(messageIDs) > 0 {
+		attachmentMap := s.batchGetDmAttachments(ctx, messageIDs)
+		for _, message := range messages {
+			if attachments, ok := attachmentMap[message.ID]; ok {
+				message.Attachments = attachments
+			}
+		}
 	}
 
 	return messages, nil
@@ -349,7 +363,13 @@ func (s *Service) SendMessage(ctx context.Context, conversationID, userID uuid.U
 	now := time.Now()
 	messageID := uuid.New()
 
-	_, err = s.db.Exec(ctx,
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx,
 		`INSERT INTO direct_messages (id, conversation_id, sender_id, encrypted_content, nonce, created_at, updated_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $6)`,
 		messageID, conversationID, userID, ciphertext, nonce, now,
@@ -358,7 +378,27 @@ func (s *Service) SendMessage(ctx context.Context, conversationID, userID uuid.U
 		return nil, err
 	}
 
-	_, err = s.db.Exec(ctx,
+	if len(req.Attachments) > 0 {
+		for _, attachmentID := range req.Attachments {
+			tag, err := tx.Exec(ctx,
+				`UPDATE message_attachments
+				 SET dm_message_id = $1
+				 WHERE id = $2
+				   AND uploader_id = $3
+				   AND dm_message_id IS NULL
+				   AND dm_conversation_id = $4`,
+				messageID, attachmentID, userID, conversationID,
+			)
+			if err != nil {
+				return nil, err
+			}
+			if tag.RowsAffected() == 0 {
+				return nil, ErrInvalidAttachment
+			}
+		}
+	}
+
+	_, err = tx.Exec(ctx,
 		`UPDATE dm_conversations SET updated_at = $2 WHERE id = $1`,
 		conversationID, now,
 	)
@@ -366,11 +406,15 @@ func (s *Service) SendMessage(ctx context.Context, conversationID, userID uuid.U
 		return nil, err
 	}
 
-	_, err = s.db.Exec(ctx,
+	_, err = tx.Exec(ctx,
 		`UPDATE dm_participants SET last_read_at = $3 WHERE conversation_id = $1 AND user_id = $2`,
 		conversationID, userID, now,
 	)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 
@@ -416,12 +460,15 @@ func (s *Service) GetMessage(ctx context.Context, messageID, userID uuid.UUID) (
 		content = "[Decryption Error]"
 	}
 
+	attachments, _ := s.getDmMessageAttachments(ctx, msg.ID)
+
 	return &DMMessageResponse{
 		ID:             msg.ID,
 		ConversationID: msg.ConversationID,
 		SenderID:       msg.SenderID,
 		Content:        content,
 		IsEdited:       msg.IsEdited,
+		Attachments:    attachments,
 		CreatedAt:      msg.CreatedAt,
 		UpdatedAt:      msg.UpdatedAt,
 		Sender:         &sender,
@@ -612,6 +659,7 @@ func (s *Service) getLastMessage(ctx context.Context, conversationID uuid.UUID, 
 		SenderID:       msg.SenderID,
 		Content:        content,
 		IsEdited:       msg.IsEdited,
+		Attachments:    attachments,
 		CreatedAt:      msg.CreatedAt,
 		UpdatedAt:      msg.UpdatedAt,
 		Sender:         sender,
@@ -643,6 +691,62 @@ func (s *Service) getUnreadCount(ctx context.Context, conversationID, userID uui
 	}
 
 	return count, nil
+}
+
+func (s *Service) getDmMessageAttachments(ctx context.Context, messageID uuid.UUID) ([]models.MessageAttachment, error) {
+	query := `
+		SELECT id, dm_message_id, message_created_at, uploader_id, filename, file_url, file_size, content_type, thumbnail_url, width, height, created_at
+		FROM message_attachments
+		WHERE dm_message_id = $1`
+
+	rows, err := s.db.Query(ctx, query, messageID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var attachments []models.MessageAttachment
+	for rows.Next() {
+		var a models.MessageAttachment
+		err := rows.Scan(&a.ID, &a.MessageID, &a.MessageCreatedAt, &a.UploaderID, &a.Filename, &a.FileURL,
+			&a.FileSize, &a.ContentType, &a.ThumbnailURL, &a.Width, &a.Height, &a.CreatedAt)
+		if err != nil {
+			return nil, err
+		}
+		attachments = append(attachments, a)
+	}
+
+	return attachments, nil
+}
+
+func (s *Service) batchGetDmAttachments(ctx context.Context, messageIDs []uuid.UUID) map[uuid.UUID][]models.MessageAttachment {
+	result := make(map[uuid.UUID][]models.MessageAttachment)
+
+	query := `
+		SELECT id, dm_message_id, message_created_at, uploader_id, filename, file_url, file_size, content_type, thumbnail_url, width, height, created_at
+		FROM message_attachments
+		WHERE dm_message_id = ANY($1)`
+
+	rows, err := s.db.Query(ctx, query, messageIDs)
+	if err != nil {
+		return result
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var a models.MessageAttachment
+		var dmMessageID *uuid.UUID
+		err := rows.Scan(&a.ID, &dmMessageID, &a.MessageCreatedAt, &a.UploaderID, &a.Filename, &a.FileURL,
+			&a.FileSize, &a.ContentType, &a.ThumbnailURL, &a.Width, &a.Height, &a.CreatedAt)
+		if err != nil {
+			continue
+		}
+		if dmMessageID != nil {
+			result[*dmMessageID] = append(result[*dmMessageID], a)
+		}
+	}
+
+	return result
 }
 
 func (s *Service) encryptContent(content string) ([]byte, []byte, error) {

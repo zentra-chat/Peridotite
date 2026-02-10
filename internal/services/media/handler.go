@@ -24,6 +24,7 @@ func (h *Handler) Routes() chi.Router {
 
 	// Attachment routes
 	r.Post("/attachments", h.UploadAttachment)
+	r.Post("/attachments/dm", h.UploadDmAttachment)
 	r.Get("/attachments/{id}", h.GetAttachment)
 	r.Delete("/attachments/{id}", h.DeleteAttachment)
 	r.Get("/attachments/{id}/download", h.GetPresignedURL)
@@ -82,6 +83,57 @@ func (h *Handler) UploadAttachment(w http.ResponseWriter, r *http.Request) {
 			utils.RespondError(w, http.StatusRequestEntityTooLarge, "File too large")
 		case ErrInvalidFileType:
 			utils.RespondError(w, http.StatusBadRequest, "Invalid file type")
+		default:
+			utils.RespondError(w, http.StatusInternalServerError, "Failed to upload file")
+		}
+		return
+	}
+
+	utils.RespondCreated(w, result)
+}
+
+func (h *Handler) UploadDmAttachment(w http.ResponseWriter, r *http.Request) {
+	userID, err := middleware.RequireAuth(r.Context())
+	if err != nil {
+		utils.RespondError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 100*1024*1024)
+
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		utils.RespondError(w, http.StatusBadRequest, "Failed to parse form data")
+		return
+	}
+
+	conversationIDStr := r.FormValue("conversationId")
+	if conversationIDStr == "" {
+		utils.RespondError(w, http.StatusBadRequest, "conversationId is required")
+		return
+	}
+
+	conversationID, err := uuid.Parse(conversationIDStr)
+	if err != nil {
+		utils.RespondError(w, http.StatusBadRequest, "Invalid conversationId")
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		utils.RespondError(w, http.StatusBadRequest, "No file provided")
+		return
+	}
+	defer file.Close()
+
+	result, err := h.service.UploadDmAttachment(r.Context(), userID, conversationID, file, header)
+	if err != nil {
+		switch err {
+		case ErrFileTooLarge:
+			utils.RespondError(w, http.StatusRequestEntityTooLarge, "File too large")
+		case ErrInvalidFileType:
+			utils.RespondError(w, http.StatusBadRequest, "Invalid file type")
+		case ErrNotParticipant:
+			utils.RespondError(w, http.StatusForbidden, "Not a participant")
 		default:
 			utils.RespondError(w, http.StatusInternalServerError, "Failed to upload file")
 		}

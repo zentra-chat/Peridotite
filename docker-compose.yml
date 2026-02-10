@@ -79,14 +79,17 @@ services:
         condition: service_healthy
     volumes:
       - ./scripts/init-db.sql:/init-db.sql:ro
-      - ./migrations/000001_initial_schema.up.sql:/schema.up.sql:ro
+      - ./migrations:/migrations:ro
     environment:
       PGPASSWORD: zentra_secure_password
     entrypoint: >
       /bin/sh -c "
       echo 'Running database initialization...';
       psql -h postgres -U zentra -d zentra -f /init-db.sql;
-      psql -h postgres -U zentra -d zentra -f /schema.up.sql;
+      for file in /migrations/*.up.sql; do
+        echo \"Applying ${file}\";
+        psql -h postgres -U zentra -d zentra -f ${file};
+      done;
       echo 'Database initialization complete.';
       exit 0;
       "

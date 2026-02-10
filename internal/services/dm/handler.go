@@ -190,6 +190,8 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		switch err {
 		case ErrNotParticipant:
 			utils.RespondError(w, http.StatusForbidden, "Not a participant")
+		case ErrInvalidAttachment:
+			utils.RespondError(w, http.StatusBadRequest, "Invalid attachment")
 		default:
 			utils.RespondError(w, http.StatusInternalServerError, "Failed to send message")
 		}
