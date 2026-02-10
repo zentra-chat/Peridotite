@@ -1,6 +1,7 @@
 package models
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -47,13 +48,13 @@ type UserSession struct {
 }
 
 type UserSettings struct {
-	UserID               uuid.UUID `json:"userId" db:"user_id"`
-	Theme                string    `json:"theme" db:"theme"`
-	NotificationsEnabled bool      `json:"notificationsEnabled" db:"notifications_enabled"`
-	SoundEnabled         bool      `json:"soundEnabled" db:"sound_enabled"`
-	CompactMode          bool      `json:"compactMode" db:"compact_mode"`
-	SettingsJSON         []byte    `json:"settings" db:"settings_json"`
-	UpdatedAt            time.Time `json:"updatedAt" db:"updated_at"`
+	UserID               uuid.UUID       `json:"userId" db:"user_id"`
+	Theme                string          `json:"theme" db:"theme"`
+	NotificationsEnabled bool            `json:"notificationsEnabled" db:"notifications_enabled"`
+	SoundEnabled         bool            `json:"soundEnabled" db:"sound_enabled"`
+	CompactMode          bool            `json:"compactMode" db:"compact_mode"`
+	SettingsJSON         json.RawMessage `json:"settings" db:"settings_json"`
+	UpdatedAt            time.Time       `json:"updatedAt" db:"updated_at"`
 }
 
 type UserBlock struct {

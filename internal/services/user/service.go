@@ -250,7 +250,7 @@ func (s *Service) GetSettings(ctx context.Context, userID uuid.UUID) (*models.Us
 				NotificationsEnabled: true,
 				SoundEnabled:         true,
 				CompactMode:          false,
-				SettingsJSON:         []byte("{}"),
+				SettingsJSON:         json.RawMessage("{}"),
 			}
 			_, err = s.db.Exec(ctx,
 				`INSERT INTO user_settings (user_id, theme, notifications_enabled, sound_enabled, compact_mode, settings_json)
@@ -265,15 +265,18 @@ func (s *Service) GetSettings(ctx context.Context, userID uuid.UUID) (*models.Us
 		}
 		return nil, err
 	}
+	if settings.SettingsJSON == nil {
+		settings.SettingsJSON = json.RawMessage("{}")
+	}
 	return settings, nil
 }
 
 type UpdateSettingsRequest struct {
-	Theme                *string `json:"theme" validate:"omitempty,oneof=dark light"`
-	NotificationsEnabled *bool   `json:"notificationsEnabled"`
-	SoundEnabled         *bool   `json:"soundEnabled"`
-	CompactMode          *bool   `json:"compactMode"`
-	SettingsJSON         []byte  `json:"settings"`
+	Theme                *string         `json:"theme" validate:"omitempty,oneof=dark light"`
+	NotificationsEnabled *bool           `json:"notificationsEnabled"`
+	SoundEnabled         *bool           `json:"soundEnabled"`
+	CompactMode          *bool           `json:"compactMode"`
+	SettingsJSON         json.RawMessage `json:"settings"`
 }
 
 func (s *Service) UpdateSettings(ctx context.Context, userID uuid.UUID, req *UpdateSettingsRequest) (*models.UserSettings, error) {
