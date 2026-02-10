@@ -35,6 +35,8 @@ func (h *Handler) Routes() chi.Router {
 	r.Route("/messages/{id}", func(r chi.Router) {
 		r.Patch("/", h.UpdateMessage)
 		r.Delete("/", h.DeleteMessage)
+		r.Post("/reactions", h.AddReaction)
+		r.Delete("/reactions/{emoji}", h.RemoveReaction)
 	})
 
 	return r
@@ -192,6 +194,8 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 			utils.RespondError(w, http.StatusForbidden, "Not a participant")
 		case ErrInvalidAttachment:
 			utils.RespondError(w, http.StatusBadRequest, "Invalid attachment")
+		case ErrMessageNotFound:
+			utils.RespondError(w, http.StatusBadRequest, "Invalid reply target")
 		default:
 			utils.RespondError(w, http.StatusInternalServerError, "Failed to send message")
 		}
@@ -262,6 +266,83 @@ func (h *Handler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 			utils.RespondError(w, http.StatusForbidden, "Cannot delete this message")
 		default:
 			utils.RespondError(w, http.StatusInternalServerError, "Failed to delete message")
+		}
+		return
+	}
+
+	utils.RespondNoContent(w)
+}
+
+func (h *Handler) AddReaction(w http.ResponseWriter, r *http.Request) {
+	userID, err := middleware.RequireAuth(r.Context())
+	if err != nil {
+		utils.RespondError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	messageID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		utils.RespondError(w, http.StatusBadRequest, "Invalid message ID")
+		return
+	}
+
+	var req struct {
+		Emoji string `json:"emoji" validate:"required"`
+	}
+	if err := utils.DecodeJSON(r, &req); err != nil {
+		utils.RespondError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if err := utils.Validate(&req); err != nil {
+		utils.RespondValidationError(w, utils.FormatValidationErrors(err))
+		return
+	}
+
+	if err := h.service.AddReaction(r.Context(), messageID, userID, req.Emoji); err != nil {
+		switch err {
+		case ErrMessageNotFound:
+			utils.RespondError(w, http.StatusNotFound, "Message not found")
+		case ErrNotParticipant:
+			utils.RespondError(w, http.StatusForbidden, "Not a participant")
+		case ErrInvalidReaction:
+			utils.RespondError(w, http.StatusBadRequest, "Invalid reaction")
+		default:
+			utils.RespondError(w, http.StatusInternalServerError, "Failed to add reaction")
+		}
+		return
+	}
+
+	utils.RespondNoContent(w)
+}
+
+func (h *Handler) RemoveReaction(w http.ResponseWriter, r *http.Request) {
+	userID, err := middleware.RequireAuth(r.Context())
+	if err != nil {
+		utils.RespondError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	messageID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		utils.RespondError(w, http.StatusBadRequest, "Invalid message ID")
+		return
+	}
+
+	emoji := chi.URLParam(r, "emoji")
+	if emoji == "" {
+		utils.RespondError(w, http.StatusBadRequest, "Invalid reaction")
+		return
+	}
+
+	if err := h.service.RemoveReaction(r.Context(), messageID, userID, emoji); err != nil {
+		switch err {
+		case ErrMessageNotFound:
+			utils.RespondError(w, http.StatusNotFound, "Message not found")
+		case ErrNotParticipant:
+			utils.RespondError(w, http.StatusForbidden, "Not a participant")
+		default:
+			utils.RespondError(w, http.StatusInternalServerError, "Failed to remove reaction")
 		}
 		return
 	}

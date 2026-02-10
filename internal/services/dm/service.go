@@ -27,6 +27,7 @@ var (
 	ErrNotMessageOwner      = errors.New("not message owner")
 	ErrBlocked              = errors.New("user is blocked")
 	ErrInvalidAttachment    = errors.New("invalid attachment")
+	ErrInvalidReaction      = errors.New("invalid reaction")
 )
 
 type Service struct {
@@ -56,6 +57,7 @@ type CreateConversationRequest struct {
 
 type SendMessageRequest struct {
 	Content     string      `json:"content" validate:"required_without=Attachments,max=4000"`
+	ReplyToID   *uuid.UUID  `json:"replyToId,omitempty"`
 	Attachments []uuid.UUID `json:"attachments,omitempty" validate:"max=10"`
 }
 
@@ -69,10 +71,19 @@ type DMMessageResponse struct {
 	SenderID       uuid.UUID                  `json:"senderId"`
 	Content        string                     `json:"content"`
 	IsEdited       bool                       `json:"isEdited"`
+	Reactions      []models.ReactionCount     `json:"reactions,omitempty"`
 	Attachments    []models.MessageAttachment `json:"attachments,omitempty"`
+	ReplyTo        *DMReplyPreview            `json:"replyTo,omitempty"`
 	CreatedAt      time.Time                  `json:"createdAt"`
 	UpdatedAt      time.Time                  `json:"updatedAt"`
 	Sender         *models.PublicUser         `json:"sender,omitempty"`
+}
+
+type DMReplyPreview struct {
+	ID       uuid.UUID          `json:"id"`
+	Content  string             `json:"content"`
+	SenderID uuid.UUID          `json:"senderId"`
+	Sender   *models.PublicUser `json:"sender"`
 }
 
 type DMConversationResponse struct {
@@ -267,7 +278,7 @@ func (s *Service) GetMessages(ctx context.Context, conversationID, userID uuid.U
 
 	if params.Before != nil {
 		query = `
-			SELECT m.id, m.conversation_id, m.sender_id, m.encrypted_content, m.nonce, m.is_edited, m.created_at, m.updated_at,
+			SELECT m.id, m.conversation_id, m.sender_id, m.encrypted_content, m.nonce, m.reply_to_id, m.is_edited, m.reactions, m.created_at, m.updated_at,
 			       u.id, u.username, u.display_name, u.avatar_url, u.bio, u.status, u.custom_status, u.created_at
 			FROM direct_messages m
 			JOIN users u ON u.id = m.sender_id
@@ -278,7 +289,7 @@ func (s *Service) GetMessages(ctx context.Context, conversationID, userID uuid.U
 		args = []interface{}{conversationID, *params.Before, limit}
 	} else if params.After != nil {
 		query = `
-			SELECT m.id, m.conversation_id, m.sender_id, m.encrypted_content, m.nonce, m.is_edited, m.created_at, m.updated_at,
+			SELECT m.id, m.conversation_id, m.sender_id, m.encrypted_content, m.nonce, m.reply_to_id, m.is_edited, m.reactions, m.created_at, m.updated_at,
 			       u.id, u.username, u.display_name, u.avatar_url, u.bio, u.status, u.custom_status, u.created_at
 			FROM direct_messages m
 			JOIN users u ON u.id = m.sender_id
@@ -289,7 +300,7 @@ func (s *Service) GetMessages(ctx context.Context, conversationID, userID uuid.U
 		args = []interface{}{conversationID, *params.After, limit}
 	} else {
 		query = `
-			SELECT m.id, m.conversation_id, m.sender_id, m.encrypted_content, m.nonce, m.is_edited, m.created_at, m.updated_at,
+			SELECT m.id, m.conversation_id, m.sender_id, m.encrypted_content, m.nonce, m.reply_to_id, m.is_edited, m.reactions, m.created_at, m.updated_at,
 			       u.id, u.username, u.display_name, u.avatar_url, u.bio, u.status, u.custom_status, u.created_at
 			FROM direct_messages m
 			JOIN users u ON u.id = m.sender_id
@@ -314,7 +325,7 @@ func (s *Service) GetMessages(ctx context.Context, conversationID, userID uuid.U
 
 		if err := rows.Scan(
 			&msg.ID, &msg.ConversationID, &msg.SenderID, &msg.EncryptedContent, &nonce,
-			&msg.IsEdited, &msg.CreatedAt, &msg.UpdatedAt,
+			&msg.ReplyToID, &msg.IsEdited, &msg.Reactions, &msg.CreatedAt, &msg.UpdatedAt,
 			&sender.ID, &sender.Username, &sender.DisplayName, &sender.AvatarURL, &sender.Bio, &sender.Status, &sender.CustomStatus, &sender.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -325,16 +336,21 @@ func (s *Service) GetMessages(ctx context.Context, conversationID, userID uuid.U
 			content = "[Decryption Error]"
 		}
 
-		messages = append(messages, &DMMessageResponse{
+		response := &DMMessageResponse{
 			ID:             msg.ID,
 			ConversationID: msg.ConversationID,
 			SenderID:       msg.SenderID,
 			Content:        content,
 			IsEdited:       msg.IsEdited,
+			Reactions:      s.buildReactions(msg.Reactions, userID),
 			CreatedAt:      msg.CreatedAt,
 			UpdatedAt:      msg.UpdatedAt,
 			Sender:         &sender,
-		})
+		}
+		if msg.ReplyToID != nil {
+			response.ReplyTo, _ = s.getReplyPreview(ctx, *msg.ReplyToID)
+		}
+		messages = append(messages, response)
 		messageIDs = append(messageIDs, msg.ID)
 	}
 
@@ -369,10 +385,27 @@ func (s *Service) SendMessage(ctx context.Context, conversationID, userID uuid.U
 	}
 	defer tx.Rollback(ctx)
 
+	if req.ReplyToID != nil {
+		var exists bool
+		err = tx.QueryRow(ctx,
+			`SELECT EXISTS(
+				SELECT 1 FROM direct_messages
+				WHERE id = $1 AND conversation_id = $2 AND deleted_at IS NULL
+			)`,
+			*req.ReplyToID, conversationID,
+		).Scan(&exists)
+		if err != nil {
+			return nil, err
+		}
+		if !exists {
+			return nil, ErrMessageNotFound
+		}
+	}
+
 	_, err = tx.Exec(ctx,
-		`INSERT INTO direct_messages (id, conversation_id, sender_id, encrypted_content, nonce, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $6)`,
-		messageID, conversationID, userID, ciphertext, nonce, now,
+		`INSERT INTO direct_messages (id, conversation_id, sender_id, encrypted_content, nonce, reply_to_id, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $7)`,
+		messageID, conversationID, userID, ciphertext, nonce, req.ReplyToID, now,
 	)
 	if err != nil {
 		return nil, err
@@ -434,14 +467,14 @@ func (s *Service) GetMessage(ctx context.Context, messageID, userID uuid.UUID) (
 	var sender models.PublicUser
 
 	err := s.db.QueryRow(ctx,
-		`SELECT m.id, m.conversation_id, m.sender_id, m.encrypted_content, m.nonce, m.is_edited, m.created_at, m.updated_at,
+		`SELECT m.id, m.conversation_id, m.sender_id, m.encrypted_content, m.nonce, m.reply_to_id, m.is_edited, m.reactions, m.created_at, m.updated_at,
 		        u.id, u.username, u.display_name, u.avatar_url, u.bio, u.status, u.custom_status, u.created_at
 		 FROM direct_messages m
 		 JOIN users u ON u.id = m.sender_id
 		 WHERE m.id = $1 AND m.deleted_at IS NULL`,
 		messageID,
 	).Scan(
-		&msg.ID, &msg.ConversationID, &msg.SenderID, &msg.EncryptedContent, &nonce, &msg.IsEdited, &msg.CreatedAt, &msg.UpdatedAt,
+		&msg.ID, &msg.ConversationID, &msg.SenderID, &msg.EncryptedContent, &nonce, &msg.ReplyToID, &msg.IsEdited, &msg.Reactions, &msg.CreatedAt, &msg.UpdatedAt,
 		&sender.ID, &sender.Username, &sender.DisplayName, &sender.AvatarURL, &sender.Bio, &sender.Status, &sender.CustomStatus, &sender.CreatedAt,
 	)
 	if err != nil {
@@ -462,17 +495,23 @@ func (s *Service) GetMessage(ctx context.Context, messageID, userID uuid.UUID) (
 
 	attachments, _ := s.getDmMessageAttachments(ctx, msg.ID)
 
-	return &DMMessageResponse{
+	response := &DMMessageResponse{
 		ID:             msg.ID,
 		ConversationID: msg.ConversationID,
 		SenderID:       msg.SenderID,
 		Content:        content,
 		IsEdited:       msg.IsEdited,
+		Reactions:      s.buildReactions(msg.Reactions, userID),
 		Attachments:    attachments,
 		CreatedAt:      msg.CreatedAt,
 		UpdatedAt:      msg.UpdatedAt,
 		Sender:         &sender,
-	}, nil
+	}
+	if msg.ReplyToID != nil {
+		response.ReplyTo, _ = s.getReplyPreview(ctx, *msg.ReplyToID)
+	}
+
+	return response, nil
 }
 
 func (s *Service) UpdateMessage(ctx context.Context, messageID, userID uuid.UUID, req *UpdateMessageRequest) (*DMMessageResponse, error) {
@@ -552,6 +591,94 @@ func (s *Service) DeleteMessage(ctx context.Context, messageID, userID uuid.UUID
 	return nil
 }
 
+func (s *Service) AddReaction(ctx context.Context, messageID, userID uuid.UUID, emoji string) error {
+	if len(emoji) == 0 || len(emoji) > 32 {
+		return ErrInvalidReaction
+	}
+
+	var conversationID uuid.UUID
+	err := s.db.QueryRow(ctx,
+		`SELECT conversation_id FROM direct_messages WHERE id = $1 AND deleted_at IS NULL`,
+		messageID,
+	).Scan(&conversationID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrMessageNotFound
+		}
+		return err
+	}
+
+	if !s.CanAccessConversation(ctx, conversationID, userID) {
+		return ErrNotParticipant
+	}
+
+	query := `
+		UPDATE direct_messages
+		SET reactions = jsonb_set(
+			coalesce(reactions, '{}'::jsonb),
+			ARRAY[$1::text],
+			(coalesce(reactions->$1, '[]'::jsonb) - $2::text) || jsonb_build_array($2::text)
+		),
+		updated_at = $3
+		WHERE id = $4 AND deleted_at IS NULL`
+
+	_, err = s.db.Exec(ctx, query, emoji, userID.String(), time.Now(), messageID)
+	if err != nil {
+		return err
+	}
+
+	s.broadcast(ctx, conversationID.String(), "DM_REACTION_ADD", map[string]interface{}{
+		"conversationId": conversationID.String(),
+		"messageId":      messageID.String(),
+		"userId":         userID.String(),
+		"emoji":          emoji,
+	})
+
+	return nil
+}
+
+func (s *Service) RemoveReaction(ctx context.Context, messageID, userID uuid.UUID, emoji string) error {
+	var conversationID uuid.UUID
+	err := s.db.QueryRow(ctx,
+		`SELECT conversation_id FROM direct_messages WHERE id = $1 AND deleted_at IS NULL`,
+		messageID,
+	).Scan(&conversationID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrMessageNotFound
+		}
+		return err
+	}
+
+	if !s.CanAccessConversation(ctx, conversationID, userID) {
+		return ErrNotParticipant
+	}
+
+	query := `
+		UPDATE direct_messages
+		SET reactions = jsonb_set(
+			reactions,
+			ARRAY[$1::text],
+			(reactions->$1) - $2::text
+		),
+		updated_at = $3
+		WHERE id = $4 AND deleted_at IS NULL`
+
+	_, err = s.db.Exec(ctx, query, emoji, userID.String(), time.Now(), messageID)
+	if err != nil {
+		return err
+	}
+
+	s.broadcast(ctx, conversationID.String(), "DM_REACTION_REMOVE", map[string]interface{}{
+		"conversationId": conversationID.String(),
+		"messageId":      messageID.String(),
+		"userId":         userID.String(),
+		"emoji":          emoji,
+	})
+
+	return nil
+}
+
 func (s *Service) MarkRead(ctx context.Context, conversationID, userID uuid.UUID) error {
 	if !s.CanAccessConversation(ctx, conversationID, userID) {
 		return ErrNotParticipant
@@ -570,7 +697,7 @@ func (s *Service) buildConversationResponse(ctx context.Context, convo models.DM
 		return nil, err
 	}
 
-	lastMessage, err := s.getLastMessage(ctx, convo.ID, participants)
+	lastMessage, err := s.getLastMessage(ctx, convo.ID, participants, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -615,18 +742,18 @@ func (s *Service) getParticipants(ctx context.Context, conversationID uuid.UUID)
 	return participants, nil
 }
 
-func (s *Service) getLastMessage(ctx context.Context, conversationID uuid.UUID, participants []models.PublicUser) (*DMMessageResponse, error) {
+func (s *Service) getLastMessage(ctx context.Context, conversationID uuid.UUID, participants []models.PublicUser, userID uuid.UUID) (*DMMessageResponse, error) {
 	var msg models.DirectMessage
 	var nonce []byte
 
 	err := s.db.QueryRow(ctx,
-		`SELECT id, conversation_id, sender_id, encrypted_content, nonce, is_edited, created_at, updated_at
+		`SELECT id, conversation_id, sender_id, encrypted_content, nonce, reply_to_id, is_edited, reactions, created_at, updated_at
 		 FROM direct_messages
 		 WHERE conversation_id = $1 AND deleted_at IS NULL
 		 ORDER BY created_at DESC
 		 LIMIT 1`,
 		conversationID,
-	).Scan(&msg.ID, &msg.ConversationID, &msg.SenderID, &msg.EncryptedContent, &nonce, &msg.IsEdited, &msg.CreatedAt, &msg.UpdatedAt)
+	).Scan(&msg.ID, &msg.ConversationID, &msg.SenderID, &msg.EncryptedContent, &nonce, &msg.ReplyToID, &msg.IsEdited, &msg.Reactions, &msg.CreatedAt, &msg.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -653,17 +780,25 @@ func (s *Service) getLastMessage(ctx context.Context, conversationID uuid.UUID, 
 		}
 	}
 
-	return &DMMessageResponse{
+	attachments, _ := s.getDmMessageAttachments(ctx, msg.ID)
+
+	response := &DMMessageResponse{
 		ID:             msg.ID,
 		ConversationID: msg.ConversationID,
 		SenderID:       msg.SenderID,
 		Content:        content,
 		IsEdited:       msg.IsEdited,
+		Reactions:      s.buildReactions(msg.Reactions, userID),
 		Attachments:    attachments,
 		CreatedAt:      msg.CreatedAt,
 		UpdatedAt:      msg.UpdatedAt,
 		Sender:         sender,
-	}, nil
+	}
+	if msg.ReplyToID != nil {
+		response.ReplyTo, _ = s.getReplyPreview(ctx, *msg.ReplyToID)
+	}
+
+	return response, nil
 }
 
 func (s *Service) getUnreadCount(ctx context.Context, conversationID, userID uuid.UUID) (int, error) {
@@ -691,6 +826,67 @@ func (s *Service) getUnreadCount(ctx context.Context, conversationID, userID uui
 	}
 
 	return count, nil
+}
+
+func (s *Service) buildReactions(reactions map[string][]uuid.UUID, userID uuid.UUID) []models.ReactionCount {
+	if len(reactions) == 0 {
+		return nil
+	}
+
+	result := make([]models.ReactionCount, 0)
+	for emoji, users := range reactions {
+		if len(users) == 0 {
+			continue
+		}
+		reacted := false
+		for _, u := range users {
+			if u == userID {
+				reacted = true
+				break
+			}
+		}
+		result = append(result, models.ReactionCount{
+			Emoji:   emoji,
+			Count:   len(users),
+			Reacted: reacted,
+		})
+	}
+
+	return result
+}
+
+func (s *Service) getReplyPreview(ctx context.Context, messageID uuid.UUID) (*DMReplyPreview, error) {
+	query := `
+		SELECT m.id, m.sender_id, m.encrypted_content, m.nonce,
+		       u.id, u.username, u.display_name, u.avatar_url, u.bio, u.status, u.custom_status, u.created_at
+		FROM direct_messages m
+		JOIN users u ON u.id = m.sender_id
+		WHERE m.id = $1 AND m.deleted_at IS NULL`
+
+	var preview DMReplyPreview
+	var encContent []byte
+	var nonce []byte
+	var sender models.PublicUser
+
+	err := s.db.QueryRow(ctx, query, messageID).Scan(
+		&preview.ID, &preview.SenderID, &encContent, &nonce,
+		&sender.ID, &sender.Username, &sender.DisplayName, &sender.AvatarURL, &sender.Bio, &sender.Status, &sender.CustomStatus, &sender.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	content, err := s.decryptContent(encContent, nonce)
+	if err != nil {
+		content = "[Decryption Error]"
+	} else if len(content) > 100 {
+		content = content[:100] + "..."
+	}
+
+	preview.Content = content
+	preview.Sender = &sender
+
+	return &preview, nil
 }
 
 func (s *Service) getDmMessageAttachments(ctx context.Context, messageID uuid.UUID) ([]models.MessageAttachment, error) {

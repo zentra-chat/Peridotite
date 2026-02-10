@@ -80,15 +80,17 @@ type DMConversationWithParticipants struct {
 }
 
 type DirectMessage struct {
-	ID               uuid.UUID  `json:"id" db:"id"`
-	ConversationID   uuid.UUID  `json:"conversationId" db:"conversation_id"`
-	SenderID         uuid.UUID  `json:"senderId" db:"sender_id"`
-	EncryptedContent []byte     `json:"encryptedContent" db:"encrypted_content"`
-	Nonce            []byte     `json:"nonce" db:"nonce"`
-	IsEdited         bool       `json:"isEdited" db:"is_edited"`
-	CreatedAt        time.Time  `json:"createdAt" db:"created_at"`
-	UpdatedAt        time.Time  `json:"updatedAt" db:"updated_at"`
-	DeletedAt        *time.Time `json:"-" db:"deleted_at"`
+	ID               uuid.UUID              `json:"id" db:"id"`
+	ConversationID   uuid.UUID              `json:"conversationId" db:"conversation_id"`
+	SenderID         uuid.UUID              `json:"senderId" db:"sender_id"`
+	EncryptedContent []byte                 `json:"encryptedContent" db:"encrypted_content"`
+	Nonce            []byte                 `json:"nonce" db:"nonce"`
+	ReplyToID        *uuid.UUID             `json:"replyToId,omitempty" db:"reply_to_id"`
+	IsEdited         bool                   `json:"isEdited" db:"is_edited"`
+	Reactions        map[string][]uuid.UUID `json:"reactions" db:"reactions"`
+	CreatedAt        time.Time              `json:"createdAt" db:"created_at"`
+	UpdatedAt        time.Time              `json:"updatedAt" db:"updated_at"`
+	DeletedAt        *time.Time             `json:"-" db:"deleted_at"`
 }
 
 type DirectMessageWithSender struct {

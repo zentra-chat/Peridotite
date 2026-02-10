@@ -752,7 +752,7 @@ func (s *Service) getMessageAttachments(ctx context.Context, messageID uuid.UUID
 
 func (s *Service) getReplyPreview(ctx context.Context, messageID uuid.UUID) (*MessageReplyPreview, error) {
 	query := `
-		SELECT m.id, m.content, m.author_id,
+		SELECT m.id, m.encrypted_content, m.author_id,
 		       u.id, u.username, u.display_name, u.avatar_url, u.bio, u.status, u.custom_status, u.created_at
 		FROM messages m
 		JOIN users u ON u.id = m.author_id
