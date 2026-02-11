@@ -16,6 +16,7 @@ type Message struct {
 	IsEdited         bool                   `json:"isEdited" db:"is_edited"`
 	IsPinned         bool                   `json:"isPinned" db:"is_pinned"`
 	Reactions        map[string][]uuid.UUID `json:"reactions" db:"reactions"`
+	LinkPreviews     []LinkPreview          `json:"linkPreviews,omitempty" db:"link_previews"`
 	CreatedAt        time.Time              `json:"createdAt" db:"created_at"`
 	UpdatedAt        time.Time              `json:"updatedAt" db:"updated_at"`
 	DeletedAt        *time.Time             `json:"-" db:"deleted_at"`
@@ -59,6 +60,15 @@ type ReactionCount struct {
 	Reacted bool   `json:"reacted"` // Whether the current user has reacted
 }
 
+type LinkPreview struct {
+	URL         string `json:"url"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	SiteName    string `json:"siteName,omitempty"`
+	ImageURL    string `json:"imageUrl,omitempty"`
+	FaviconURL  string `json:"faviconUrl,omitempty"`
+}
+
 // Direct Messages (E2E Encrypted)
 
 type DMConversation struct {
@@ -88,6 +98,7 @@ type DirectMessage struct {
 	ReplyToID        *uuid.UUID             `json:"replyToId,omitempty" db:"reply_to_id"`
 	IsEdited         bool                   `json:"isEdited" db:"is_edited"`
 	Reactions        map[string][]uuid.UUID `json:"reactions" db:"reactions"`
+	LinkPreviews     []LinkPreview          `json:"linkPreviews,omitempty" db:"link_previews"`
 	CreatedAt        time.Time              `json:"createdAt" db:"created_at"`
 	UpdatedAt        time.Time              `json:"updatedAt" db:"updated_at"`
 	DeletedAt        *time.Time             `json:"-" db:"deleted_at"`

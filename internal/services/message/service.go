@@ -13,6 +13,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 	"github.com/zentra/peridotite/internal/models"
+	"github.com/zentra/peridotite/internal/utils"
 	"github.com/zentra/peridotite/pkg/encryption"
 )
 
@@ -120,6 +121,12 @@ func (s *Service) CreateMessage(ctx context.Context, channelID, userID uuid.UUID
 		return nil, ErrInsufficientPerms
 	}
 
+	linkPreviews := utils.BuildLinkPreviews(ctx, req.Content)
+	linkPreviewJSON, err := json.Marshal(linkPreviews)
+	if err != nil {
+		linkPreviewJSON = []byte("[]")
+	}
+
 	// Encrypt message content
 	encryptedContent, err := encryption.Encrypt([]byte(req.Content), s.encryptionKey)
 	if err != nil {
@@ -137,20 +144,24 @@ func (s *Service) CreateMessage(ctx context.Context, channelID, userID uuid.UUID
 
 	// Insert message
 	query := `
-		INSERT INTO messages (id, channel_id, author_id, encrypted_content, reply_to_id, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $6)
-		RETURNING id, channel_id, author_id, encrypted_content, reply_to_id, is_pinned, is_edited, created_at, updated_at`
+		INSERT INTO messages (id, channel_id, author_id, encrypted_content, reply_to_id, link_previews, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $7)
+		RETURNING id, channel_id, author_id, encrypted_content, reply_to_id, link_previews, is_pinned, is_edited, created_at, updated_at`
 
 	var msg models.Message
 	var encContent []byte
+	var linkPreviewRaw []byte
 	err = tx.QueryRow(ctx, query,
-		messageID, channelID, userID, encryptedContent, req.ReplyToID, now,
+		messageID, channelID, userID, encryptedContent, req.ReplyToID, string(linkPreviewJSON), now,
 	).Scan(
 		&msg.ID, &msg.ChannelID, &msg.AuthorID, &encContent,
-		&msg.ReplyToID, &msg.IsPinned, &msg.IsEdited, &msg.CreatedAt, &msg.UpdatedAt,
+		&msg.ReplyToID, &linkPreviewRaw, &msg.IsPinned, &msg.IsEdited, &msg.CreatedAt, &msg.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
+	}
+	if len(linkPreviewRaw) > 0 {
+		_ = json.Unmarshal(linkPreviewRaw, &msg.LinkPreviews)
 	}
 
 	// Decrypt for response
@@ -202,8 +213,8 @@ func (s *Service) CreateMessage(ctx context.Context, channelID, userID uuid.UUID
 // GetMessage retrieves a single message
 func (s *Service) GetMessage(ctx context.Context, messageID, userID uuid.UUID) (*MessageResponse, error) {
 	query := `
-		SELECT m.id, m.channel_id, m.author_id, m.encrypted_content, m.reply_to_id, 
-		       m.is_pinned, m.is_edited, m.reactions, m.created_at, m.updated_at,
+		SELECT m.id, m.channel_id, m.author_id, m.encrypted_content, m.reply_to_id,
+		       m.link_previews, m.is_pinned, m.is_edited, m.reactions, m.created_at, m.updated_at,
 		       u.id, u.username, u.display_name, u.avatar_url, u.bio, u.status, u.custom_status, u.created_at
 		FROM messages m
 		JOIN users u ON u.id = m.author_id
@@ -211,11 +222,12 @@ func (s *Service) GetMessage(ctx context.Context, messageID, userID uuid.UUID) (
 
 	var msg models.Message
 	var encContent []byte
+	var linkPreviewRaw []byte
 	var author models.PublicUser
 
 	err := s.db.QueryRow(ctx, query, messageID).Scan(
 		&msg.ID, &msg.ChannelID, &msg.AuthorID, &encContent,
-		&msg.ReplyToID, &msg.IsPinned, &msg.IsEdited, &msg.Reactions, &msg.CreatedAt, &msg.UpdatedAt,
+		&msg.ReplyToID, &linkPreviewRaw, &msg.IsPinned, &msg.IsEdited, &msg.Reactions, &msg.CreatedAt, &msg.UpdatedAt,
 		&author.ID, &author.Username, &author.DisplayName, &author.AvatarURL, &author.Bio, &author.Status, &author.CustomStatus, &author.CreatedAt,
 	)
 	if err != nil {
@@ -238,6 +250,9 @@ func (s *Service) GetMessage(ctx context.Context, messageID, userID uuid.UUID) (
 	} else {
 		contentStr := string(decrypted)
 		msg.Content = &contentStr
+	}
+	if len(linkPreviewRaw) > 0 {
+		_ = json.Unmarshal(linkPreviewRaw, &msg.LinkPreviews)
 	}
 
 	response := &MessageResponse{
@@ -293,7 +308,7 @@ func (s *Service) GetChannelMessages(ctx context.Context, channelID, userID uuid
 	if params.Before != nil {
 		query = `
 			SELECT m.id, m.channel_id, m.author_id, m.encrypted_content, m.reply_to_id,
-			       m.is_pinned, m.is_edited, m.reactions, m.created_at, m.updated_at,
+			       m.link_previews, m.is_pinned, m.is_edited, m.reactions, m.created_at, m.updated_at,
 			       u.id, u.username, u.display_name, u.avatar_url, u.bio, u.status, u.custom_status, u.created_at
 			FROM messages m
 			JOIN users u ON u.id = m.author_id
@@ -305,7 +320,7 @@ func (s *Service) GetChannelMessages(ctx context.Context, channelID, userID uuid
 	} else if params.After != nil {
 		query = `
 			SELECT m.id, m.channel_id, m.author_id, m.encrypted_content, m.reply_to_id,
-			       m.is_pinned, m.is_edited, m.reactions, m.created_at, m.updated_at,
+			       m.link_previews, m.is_pinned, m.is_edited, m.reactions, m.created_at, m.updated_at,
 			       u.id, u.username, u.display_name, u.avatar_url, u.bio, u.status, u.custom_status, u.created_at
 			FROM messages m
 			JOIN users u ON u.id = m.author_id
@@ -317,7 +332,7 @@ func (s *Service) GetChannelMessages(ctx context.Context, channelID, userID uuid
 	} else {
 		query = `
 			SELECT m.id, m.channel_id, m.author_id, m.encrypted_content, m.reply_to_id,
-			       m.is_pinned, m.is_edited, m.reactions, m.created_at, m.updated_at,
+			       m.link_previews, m.is_pinned, m.is_edited, m.reactions, m.created_at, m.updated_at,
 			       u.id, u.username, u.display_name, u.avatar_url, u.bio, u.status, u.custom_status, u.created_at
 			FROM messages m
 			JOIN users u ON u.id = m.author_id
@@ -339,11 +354,12 @@ func (s *Service) GetChannelMessages(ctx context.Context, channelID, userID uuid
 	for rows.Next() {
 		var msg models.Message
 		var encContent []byte
+		var linkPreviewRaw []byte
 		var author models.PublicUser
 
 		err := rows.Scan(
 			&msg.ID, &msg.ChannelID, &msg.AuthorID, &encContent,
-			&msg.ReplyToID, &msg.IsPinned, &msg.IsEdited, &msg.Reactions, &msg.CreatedAt, &msg.UpdatedAt,
+			&msg.ReplyToID, &linkPreviewRaw, &msg.IsPinned, &msg.IsEdited, &msg.Reactions, &msg.CreatedAt, &msg.UpdatedAt,
 			&author.ID, &author.Username, &author.DisplayName, &author.AvatarURL, &author.Bio, &author.Status, &author.CustomStatus, &author.CreatedAt,
 		)
 		if err != nil {
@@ -358,6 +374,9 @@ func (s *Service) GetChannelMessages(ctx context.Context, channelID, userID uuid
 		} else {
 			decStr := string(decrypted)
 			msg.Content = &decStr
+		}
+		if len(linkPreviewRaw) > 0 {
+			_ = json.Unmarshal(linkPreviewRaw, &msg.LinkPreviews)
 		}
 
 		messages = append(messages, &MessageResponse{
@@ -431,9 +450,15 @@ func (s *Service) UpdateMessage(ctx context.Context, messageID, userID uuid.UUID
 	}
 
 	now := time.Now()
+	linkPreviews := utils.BuildLinkPreviews(ctx, req.Content)
+	linkPreviewJSON, err := json.Marshal(linkPreviews)
+	if err != nil {
+		linkPreviewJSON = []byte("[]")
+	}
+
 	_, err = s.db.Exec(ctx,
-		`UPDATE messages SET encrypted_content = $1, is_edited = TRUE, updated_at = $2 WHERE id = $3`,
-		encryptedContent, now, messageID,
+		`UPDATE messages SET encrypted_content = $1, link_previews = $2::jsonb, is_edited = TRUE, updated_at = $3 WHERE id = $4`,
+		encryptedContent, string(linkPreviewJSON), now, messageID,
 	)
 	if err != nil {
 		return nil, err
@@ -611,7 +636,7 @@ func (s *Service) GetPinnedMessages(ctx context.Context, channelID, userID uuid.
 
 	query := `
 		SELECT m.id, m.channel_id, m.author_id, m.encrypted_content, m.reply_to_id,
-		       m.is_pinned, m.created_at, m.updated_at, m.is_edited,
+		       m.link_previews, m.is_pinned, m.created_at, m.updated_at, m.is_edited,
 		       u.id, u.username, u.display_name, u.avatar_url, u.bio, u.status, u.custom_status, u.created_at
 		FROM messages m
 		JOIN users u ON u.id = m.author_id
@@ -629,11 +654,12 @@ func (s *Service) GetPinnedMessages(ctx context.Context, channelID, userID uuid.
 	for rows.Next() {
 		var msg models.Message
 		var encContent []byte
+		var linkPreviewRaw []byte
 		var author models.PublicUser
 
 		err := rows.Scan(
 			&msg.ID, &msg.ChannelID, &msg.AuthorID, &encContent,
-			&msg.ReplyToID, &msg.IsPinned, &msg.CreatedAt, &msg.UpdatedAt, &msg.IsEdited,
+			&msg.ReplyToID, &linkPreviewRaw, &msg.IsPinned, &msg.CreatedAt, &msg.UpdatedAt, &msg.IsEdited,
 			&author.ID, &author.Username, &author.DisplayName, &author.AvatarURL, &author.Bio, &author.Status, &author.CustomStatus, &author.CreatedAt,
 		)
 		if err != nil {
@@ -647,6 +673,9 @@ func (s *Service) GetPinnedMessages(ctx context.Context, channelID, userID uuid.
 		} else {
 			decStr := string(decrypted)
 			msg.Content = &decStr
+		}
+		if len(linkPreviewRaw) > 0 {
+			_ = json.Unmarshal(linkPreviewRaw, &msg.LinkPreviews)
 		}
 
 		messages = append(messages, &MessageResponse{
@@ -669,13 +698,13 @@ func (s *Service) SearchMessages(ctx context.Context, channelID, userID uuid.UUI
 	}
 
 	// Note: Searching encrypted content is complex. This is a simplified approach.
-	// In production, you might use a separate search index with encrypted tokens.
+	// In production, we might use a separate search index with encrypted tokens.
 	// For now, we'll fetch recent messages and filter client-side or use metadata.
 
 	// This query searches by author username as a simple example
 	query := `
 		SELECT m.id, m.channel_id, m.author_id, m.encrypted_content, m.reply_to_id,
-		       m.is_pinned, m.created_at, m.updated_at, m.is_edited,
+		       m.link_previews, m.is_pinned, m.created_at, m.updated_at, m.is_edited,
 		       u.id, u.username, u.display_name, u.avatar_url, u.bio, u.status, u.custom_status, u.created_at
 		FROM messages m
 		JOIN users u ON u.id = m.author_id
@@ -694,11 +723,12 @@ func (s *Service) SearchMessages(ctx context.Context, channelID, userID uuid.UUI
 	for rows.Next() {
 		var msg models.Message
 		var encContent []byte
+		var linkPreviewRaw []byte
 		var author models.PublicUser
 
 		err := rows.Scan(
 			&msg.ID, &msg.ChannelID, &msg.AuthorID, &encContent,
-			&msg.ReplyToID, &msg.IsPinned, &msg.CreatedAt, &msg.UpdatedAt, &msg.IsEdited,
+			&msg.ReplyToID, &linkPreviewRaw, &msg.IsPinned, &msg.CreatedAt, &msg.UpdatedAt, &msg.IsEdited,
 			&author.ID, &author.Username, &author.DisplayName, &author.AvatarURL, &author.Bio, &author.Status, &author.CustomStatus, &author.CreatedAt,
 		)
 		if err != nil {
@@ -712,6 +742,9 @@ func (s *Service) SearchMessages(ctx context.Context, channelID, userID uuid.UUI
 		} else {
 			decStr := string(decrypted)
 			msg.Content = &decStr
+		}
+		if len(linkPreviewRaw) > 0 {
+			_ = json.Unmarshal(linkPreviewRaw, &msg.LinkPreviews)
 		}
 
 		messages = append(messages, &MessageResponse{
