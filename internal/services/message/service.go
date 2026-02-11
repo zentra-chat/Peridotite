@@ -13,8 +13,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 	"github.com/zentra/peridotite/internal/models"
-	"github.com/zentra/peridotite/internal/utils"
-	"github.com/zentra/peridotite/pkg/encryption"
+	"github.com/zentra/peridotite/internal/services/messaging"
 )
 
 var (
@@ -28,8 +27,8 @@ var (
 type Service struct {
 	db             *pgxpool.Pool
 	redis          *redis.Client
-	encryptionKey  []byte
 	channelService ChannelServiceInterface
+	cipher         messaging.ContentCipher
 }
 
 type ChannelServiceInterface interface {
@@ -42,8 +41,8 @@ func NewService(db *pgxpool.Pool, redis *redis.Client, encryptionKey []byte, cha
 	return &Service{
 		db:             db,
 		redis:          redis,
-		encryptionKey:  encryptionKey,
 		channelService: channelService,
+		cipher:         messaging.NewChannelCipher(encryptionKey),
 	}
 }
 
@@ -121,14 +120,11 @@ func (s *Service) CreateMessage(ctx context.Context, channelID, userID uuid.UUID
 		return nil, ErrInsufficientPerms
 	}
 
-	linkPreviews := utils.BuildLinkPreviews(ctx, req.Content)
-	linkPreviewJSON, err := json.Marshal(linkPreviews)
-	if err != nil {
-		linkPreviewJSON = []byte("[]")
-	}
+	linkPreviews := messaging.BuildLinkPreviews(ctx, req.Content)
+	linkPreviewJSON := messaging.EncodeLinkPreviews(linkPreviews)
 
 	// Encrypt message content
-	encryptedContent, err := encryption.Encrypt([]byte(req.Content), s.encryptionKey)
+	encryptedContent, _, err := s.cipher.Encrypt(req.Content)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encrypt message: %w", err)
 	}
@@ -160,16 +156,13 @@ func (s *Service) CreateMessage(ctx context.Context, channelID, userID uuid.UUID
 	if err != nil {
 		return nil, err
 	}
-	if len(linkPreviewRaw) > 0 {
-		_ = json.Unmarshal(linkPreviewRaw, &msg.LinkPreviews)
-	}
+	msg.LinkPreviews = messaging.DecodeLinkPreviews(linkPreviewRaw)
 
 	// Decrypt for response
-	decrypted, err := encryption.Decrypt(encContent, s.encryptionKey)
+	contentStr, err := s.cipher.Decrypt(encContent, nil)
 	if err != nil {
 		return nil, err
 	}
-	contentStr := string(decrypted)
 	msg.Content = &contentStr
 
 	// Link attachments to message
@@ -243,17 +236,14 @@ func (s *Service) GetMessage(ctx context.Context, messageID, userID uuid.UUID) (
 	}
 
 	// Decrypt content
-	decrypted, err := encryption.Decrypt(encContent, s.encryptionKey)
+	contentStr, err := s.cipher.Decrypt(encContent, nil)
 	if err != nil {
 		contentErr := "[Decryption Error]"
 		msg.Content = &contentErr
 	} else {
-		contentStr := string(decrypted)
 		msg.Content = &contentStr
 	}
-	if len(linkPreviewRaw) > 0 {
-		_ = json.Unmarshal(linkPreviewRaw, &msg.LinkPreviews)
-	}
+	msg.LinkPreviews = messaging.DecodeLinkPreviews(linkPreviewRaw)
 
 	response := &MessageResponse{
 		Message: &msg,
@@ -367,17 +357,14 @@ func (s *Service) GetChannelMessages(ctx context.Context, channelID, userID uuid
 		}
 
 		// Decrypt content
-		decrypted, err := encryption.Decrypt(encContent, s.encryptionKey)
+		contentStr, err := s.cipher.Decrypt(encContent, nil)
 		if err != nil {
 			errStr := "[Decryption Error]"
 			msg.Content = &errStr
 		} else {
-			decStr := string(decrypted)
-			msg.Content = &decStr
+			msg.Content = &contentStr
 		}
-		if len(linkPreviewRaw) > 0 {
-			_ = json.Unmarshal(linkPreviewRaw, &msg.LinkPreviews)
-		}
+		msg.LinkPreviews = messaging.DecodeLinkPreviews(linkPreviewRaw)
 
 		messages = append(messages, &MessageResponse{
 			Message: &msg,
@@ -444,17 +431,14 @@ func (s *Service) UpdateMessage(ctx context.Context, messageID, userID uuid.UUID
 	}
 
 	// Encrypt new content
-	encryptedContent, err := encryption.Encrypt([]byte(req.Content), s.encryptionKey)
+	encryptedContent, _, err := s.cipher.Encrypt(req.Content)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encrypt message: %w", err)
 	}
 
 	now := time.Now()
-	linkPreviews := utils.BuildLinkPreviews(ctx, req.Content)
-	linkPreviewJSON, err := json.Marshal(linkPreviews)
-	if err != nil {
-		linkPreviewJSON = []byte("[]")
-	}
+	linkPreviews := messaging.BuildLinkPreviews(ctx, req.Content)
+	linkPreviewJSON := messaging.EncodeLinkPreviews(linkPreviews)
 
 	_, err = s.db.Exec(ctx,
 		`UPDATE messages SET encrypted_content = $1, link_previews = $2::jsonb, is_edited = TRUE, updated_at = $3 WHERE id = $4`,
@@ -666,17 +650,14 @@ func (s *Service) GetPinnedMessages(ctx context.Context, channelID, userID uuid.
 			return nil, err
 		}
 
-		decrypted, err := encryption.Decrypt(encContent, s.encryptionKey)
+		contentStr, err := s.cipher.Decrypt(encContent, nil)
 		if err != nil {
 			errStr := "[Decryption Error]"
 			msg.Content = &errStr
 		} else {
-			decStr := string(decrypted)
-			msg.Content = &decStr
+			msg.Content = &contentStr
 		}
-		if len(linkPreviewRaw) > 0 {
-			_ = json.Unmarshal(linkPreviewRaw, &msg.LinkPreviews)
-		}
+		msg.LinkPreviews = messaging.DecodeLinkPreviews(linkPreviewRaw)
 
 		messages = append(messages, &MessageResponse{
 			Message: &msg,
@@ -735,17 +716,14 @@ func (s *Service) SearchMessages(ctx context.Context, channelID, userID uuid.UUI
 			return nil, err
 		}
 
-		decrypted, err := encryption.Decrypt(encContent, s.encryptionKey)
+		contentStr, err := s.cipher.Decrypt(encContent, nil)
 		if err != nil {
 			errStr := "[Decryption Error]"
 			msg.Content = &errStr
 		} else {
-			decStr := string(decrypted)
-			msg.Content = &decStr
+			msg.Content = &contentStr
 		}
-		if len(linkPreviewRaw) > 0 {
-			_ = json.Unmarshal(linkPreviewRaw, &msg.LinkPreviews)
-		}
+		msg.LinkPreviews = messaging.DecodeLinkPreviews(linkPreviewRaw)
 
 		messages = append(messages, &MessageResponse{
 			Message: &msg,
@@ -803,15 +781,14 @@ func (s *Service) getReplyPreview(ctx context.Context, messageID uuid.UUID) (*Me
 		return nil, err
 	}
 
-	decrypted, err := encryption.Decrypt(encContent, s.encryptionKey)
+	contentStr, err := s.cipher.Decrypt(encContent, nil)
 	if err != nil {
 		preview.Content = "[Decryption Error]"
 	} else {
-		content := string(decrypted)
-		if len(content) > 100 {
-			content = content[:100] + "..."
+		if len(contentStr) > 100 {
+			contentStr = contentStr[:100] + "..."
 		}
-		preview.Content = content
+		preview.Content = contentStr
 	}
 	preview.Author = &author
 

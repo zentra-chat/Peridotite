@@ -2,13 +2,9 @@ package dm
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,8 +13,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 	"github.com/zentra/peridotite/internal/models"
-	"github.com/zentra/peridotite/internal/utils"
-	"github.com/zentra/peridotite/pkg/encryption"
+	"github.com/zentra/peridotite/internal/services/messaging"
 )
 
 var (
@@ -32,10 +27,10 @@ var (
 )
 
 type Service struct {
-	db            *pgxpool.Pool
-	redis         *redis.Client
-	encryptionKey []byte
-	userService   UserServiceInterface
+	db          *pgxpool.Pool
+	redis       *redis.Client
+	userService UserServiceInterface
+	cipher      messaging.ContentCipher
 }
 
 type UserServiceInterface interface {
@@ -45,10 +40,10 @@ type UserServiceInterface interface {
 
 func NewService(db *pgxpool.Pool, redis *redis.Client, encryptionKey []byte, userService UserServiceInterface) *Service {
 	return &Service{
-		db:            db,
-		redis:         redis,
-		encryptionKey: encryptionKey,
-		userService:   userService,
+		db:          db,
+		redis:       redis,
+		userService: userService,
+		cipher:      messaging.NewDMCipher(encryptionKey),
 	}
 }
 
@@ -333,11 +328,9 @@ func (s *Service) GetMessages(ctx context.Context, conversationID, userID uuid.U
 		); err != nil {
 			return nil, err
 		}
-		if len(linkPreviewRaw) > 0 {
-			_ = json.Unmarshal(linkPreviewRaw, &msg.LinkPreviews)
-		}
+		msg.LinkPreviews = messaging.DecodeLinkPreviews(linkPreviewRaw)
 
-		content, err := s.decryptContent(msg.EncryptedContent, nonce)
+		content, err := s.cipher.Decrypt(msg.EncryptedContent, nonce)
 		if err != nil {
 			content = "[Decryption Error]"
 		}
@@ -378,13 +371,10 @@ func (s *Service) SendMessage(ctx context.Context, conversationID, userID uuid.U
 		return nil, ErrNotParticipant
 	}
 
-	linkPreviews := utils.BuildLinkPreviews(ctx, req.Content)
-	linkPreviewJSON, err := json.Marshal(linkPreviews)
-	if err != nil {
-		linkPreviewJSON = []byte("[]")
-	}
+	linkPreviews := messaging.BuildLinkPreviews(ctx, req.Content)
+	linkPreviewJSON := messaging.EncodeLinkPreviews(linkPreviews)
 
-	ciphertext, nonce, err := s.encryptContent(req.Content)
+	ciphertext, nonce, err := s.cipher.Encrypt(req.Content)
 	if err != nil {
 		return nil, err
 	}
@@ -502,13 +492,11 @@ func (s *Service) GetMessage(ctx context.Context, messageID, userID uuid.UUID) (
 		return nil, ErrNotParticipant
 	}
 
-	content, err := s.decryptContent(msg.EncryptedContent, nonce)
+	content, err := s.cipher.Decrypt(msg.EncryptedContent, nonce)
 	if err != nil {
 		content = "[Decryption Error]"
 	}
-	if len(linkPreviewRaw) > 0 {
-		_ = json.Unmarshal(linkPreviewRaw, &msg.LinkPreviews)
-	}
+	msg.LinkPreviews = messaging.DecodeLinkPreviews(linkPreviewRaw)
 
 	attachments, _ := s.getDmMessageAttachments(ctx, msg.ID)
 
@@ -551,13 +539,10 @@ func (s *Service) UpdateMessage(ctx context.Context, messageID, userID uuid.UUID
 		return nil, ErrNotMessageOwner
 	}
 
-	linkPreviews := utils.BuildLinkPreviews(ctx, req.Content)
-	linkPreviewJSON, err := json.Marshal(linkPreviews)
-	if err != nil {
-		linkPreviewJSON = []byte("[]")
-	}
+	linkPreviews := messaging.BuildLinkPreviews(ctx, req.Content)
+	linkPreviewJSON := messaging.EncodeLinkPreviews(linkPreviews)
 
-	ciphertext, nonce, err := s.encryptContent(req.Content)
+	ciphertext, nonce, err := s.cipher.Encrypt(req.Content)
 	if err != nil {
 		return nil, err
 	}
@@ -786,13 +771,11 @@ func (s *Service) getLastMessage(ctx context.Context, conversationID uuid.UUID, 
 		return nil, err
 	}
 
-	content, err := s.decryptContent(msg.EncryptedContent, nonce)
+	content, err := s.cipher.Decrypt(msg.EncryptedContent, nonce)
 	if err != nil {
 		content = "[Decryption Error]"
 	}
-	if len(linkPreviewRaw) > 0 {
-		_ = json.Unmarshal(linkPreviewRaw, &msg.LinkPreviews)
-	}
+	msg.LinkPreviews = messaging.DecodeLinkPreviews(linkPreviewRaw)
 
 	var sender *models.PublicUser
 	for i := range participants {
@@ -905,7 +888,7 @@ func (s *Service) getReplyPreview(ctx context.Context, messageID uuid.UUID) (*DM
 		return nil, err
 	}
 
-	content, err := s.decryptContent(encContent, nonce)
+	content, err := s.cipher.Decrypt(encContent, nonce)
 	if err != nil {
 		content = "[Decryption Error]"
 	} else if len(content) > 100 {
@@ -972,51 +955,4 @@ func (s *Service) batchGetDmAttachments(ctx context.Context, messageIDs []uuid.U
 	}
 
 	return result
-}
-
-func (s *Service) encryptContent(content string) ([]byte, []byte, error) {
-	if len(s.encryptionKey) != 32 {
-		return nil, nil, encryption.ErrInvalidKeyLength
-	}
-
-	block, err := aes.NewCipher(s.encryptionKey)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, nil, err
-	}
-
-	ciphertext := gcm.Seal(nil, nonce, []byte(content), nil)
-	return ciphertext, nonce, nil
-}
-
-func (s *Service) decryptContent(ciphertext, nonce []byte) (string, error) {
-	if len(s.encryptionKey) != 32 {
-		return "", encryption.ErrInvalidKeyLength
-	}
-
-	block, err := aes.NewCipher(s.encryptionKey)
-	if err != nil {
-		return "", err
-	}
-
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", err
-	}
-
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
-	if err != nil {
-		return "", encryption.ErrDecryptionFailed
-	}
-
-	return string(plaintext), nil
 }
