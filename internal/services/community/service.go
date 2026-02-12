@@ -97,12 +97,12 @@ func (s *Service) CreateCommunity(ctx context.Context, ownerID uuid.UUID, req *C
 			return err
 		}
 
-		// Add owner as member with owner role
+		// Add owner as member
 		memberID := uuid.New()
 		_, err = tx.Exec(ctx,
-			`INSERT INTO community_members (id, community_id, user_id, role, joined_at)
-			VALUES ($1, $2, $3, $4, NOW())`,
-			memberID, community.ID, ownerID, models.MemberRoleOwner,
+			`INSERT INTO community_members (id, community_id, user_id, joined_at)
+			VALUES ($1, $2, $3, NOW())`,
+			memberID, community.ID, ownerID,
 		)
 		if err != nil {
 			return err
@@ -367,10 +367,10 @@ func (s *Service) DeleteCommunity(ctx context.Context, communityID, userID uuid.
 func (s *Service) GetMember(ctx context.Context, communityID, userID uuid.UUID) (*models.CommunityMember, error) {
 	member := &models.CommunityMember{}
 	err := s.db.QueryRow(ctx,
-		`SELECT id, community_id, user_id, nickname, role, joined_at
+		`SELECT id, community_id, user_id, nickname, joined_at
 		FROM community_members WHERE community_id = $1 AND user_id = $2`,
 		communityID, userID,
-	).Scan(&member.ID, &member.CommunityID, &member.UserID, &member.Nickname, &member.Role, &member.JoinedAt)
+	).Scan(&member.ID, &member.CommunityID, &member.UserID, &member.Nickname, &member.JoinedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotMember
@@ -395,12 +395,12 @@ func (s *Service) GetMembers(ctx context.Context, communityID uuid.UUID, limit, 
 	}
 
 	rows, err := s.db.Query(ctx,
-		`SELECT cm.id, cm.community_id, cm.user_id, cm.nickname, cm.role, cm.joined_at,
+		`SELECT cm.id, cm.community_id, cm.user_id, cm.nickname, cm.joined_at,
 		u.id, u.username, u.display_name, u.avatar_url, u.bio, u.status, u.custom_status, u.created_at
 		FROM community_members cm
 		JOIN users u ON u.id = cm.user_id
 		WHERE cm.community_id = $1
-		ORDER BY cm.role DESC, cm.joined_at
+		ORDER BY cm.joined_at
 		LIMIT $2 OFFSET $3`,
 		communityID, limit, offset,
 	)
@@ -414,7 +414,7 @@ func (s *Service) GetMembers(ctx context.Context, communityID uuid.UUID, limit, 
 		m := &models.CommunityMemberWithUser{}
 		u := &models.PublicUser{}
 		err := rows.Scan(
-			&m.ID, &m.CommunityID, &m.UserID, &m.Nickname, &m.Role, &m.JoinedAt,
+			&m.ID, &m.CommunityID, &m.UserID, &m.Nickname, &m.JoinedAt,
 			&u.ID, &u.Username, &u.DisplayName, &u.AvatarURL, &u.Bio, &u.Status, &u.CustomStatus, &u.CreatedAt,
 		)
 		if err != nil {
@@ -542,9 +542,9 @@ func (s *Service) addMember(ctx context.Context, communityID, userID uuid.UUID) 
 	memberID := uuid.New()
 	return database.WithTransaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		_, err = tx.Exec(ctx,
-			`INSERT INTO community_members (id, community_id, user_id, role, joined_at)
-			VALUES ($1, $2, $3, $4, NOW())`,
-			memberID, communityID, userID, models.MemberRoleMember,
+			`INSERT INTO community_members (id, community_id, user_id, joined_at)
+			VALUES ($1, $2, $3, NOW())`,
+			memberID, communityID, userID,
 		)
 		if err != nil {
 			return err
@@ -606,27 +606,6 @@ func (s *Service) KickMember(ctx context.Context, communityID, actorID, targetID
 	_, err = s.db.Exec(ctx,
 		`DELETE FROM community_members WHERE community_id = $1 AND user_id = $2`,
 		communityID, targetID,
-	)
-	return err
-}
-
-func (s *Service) UpdateMemberRole(ctx context.Context, communityID, actorID, targetID uuid.UUID, role models.MemberRole) error {
-	if err := s.requirePermission(ctx, communityID, actorID, models.PermissionManageRoles); err != nil {
-		return err
-	}
-
-	// Cannot change owner role
-	community, err := s.GetCommunity(ctx, communityID)
-	if err != nil {
-		return err
-	}
-	if community.OwnerID == targetID && role != models.MemberRoleOwner {
-		return errors.New("cannot change owner's role")
-	}
-
-	_, err = s.db.Exec(ctx,
-		`UPDATE community_members SET role = $3 WHERE community_id = $1 AND user_id = $2`,
-		communityID, targetID, role,
 	)
 	return err
 }
@@ -1099,10 +1078,6 @@ func (s *Service) GetMemberPermissions(ctx context.Context, communityID, userID 
 	}
 
 	if community.OwnerID == userID {
-		return models.PermissionAdministrator, nil
-	}
-
-	if member.Role == models.MemberRoleAdmin || member.Role == models.MemberRoleOwner {
 		return models.PermissionAdministrator, nil
 	}
 

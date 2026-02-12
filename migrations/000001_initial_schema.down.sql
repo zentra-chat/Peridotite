@@ -21,7 +21,6 @@ DROP TABLE IF EXISTS user_blocks;
 DROP TABLE IF EXISTS direct_messages;
 DROP TABLE IF EXISTS dm_participants;
 DROP TABLE IF EXISTS dm_conversations;
-DROP TABLE IF EXISTS message_reactions;
 DROP TABLE IF EXISTS message_attachments;
 DROP TABLE IF EXISTS messages;
 DROP TABLE IF EXISTS channel_permissions;
@@ -36,6 +35,5 @@ DROP TABLE IF EXISTS user_sessions;
 DROP TABLE IF EXISTS users;
 
 -- Drop custom types
-DROP TYPE IF EXISTS member_role;
 DROP TYPE IF EXISTS channel_type;
 DROP TYPE IF EXISTS user_status;

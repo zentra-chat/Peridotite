@@ -67,7 +67,6 @@ CREATE TABLE IF NOT EXISTS community_members (
     community_id UUID NOT NULL REFERENCES communities(id) ON DELETE CASCADE,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     nickname VARCHAR(64),
-    role member_role DEFAULT 'member',
     joined_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE(community_id, user_id)
 );
@@ -166,6 +165,7 @@ CREATE TABLE IF NOT EXISTS messages (
     is_edited BOOLEAN DEFAULT FALSE,
     is_pinned BOOLEAN DEFAULT FALSE,
     reactions JSONB DEFAULT '{}',
+    link_previews JSONB DEFAULT '[]'::jsonb,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     deleted_at TIMESTAMPTZ,
@@ -210,6 +210,8 @@ CREATE TABLE IF NOT EXISTS message_attachments (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     message_id UUID,
     message_created_at TIMESTAMPTZ,
+    dm_message_id UUID,
+    dm_conversation_id UUID,
     uploader_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     filename VARCHAR(255) NOT NULL,
     file_url TEXT NOT NULL,
@@ -222,6 +224,8 @@ CREATE TABLE IF NOT EXISTS message_attachments (
 );
 
 CREATE INDEX IF NOT EXISTS idx_message_attachments_message_id ON message_attachments(message_id);
+CREATE INDEX IF NOT EXISTS idx_message_attachments_dm_message_id ON message_attachments(dm_message_id);
+CREATE INDEX IF NOT EXISTS idx_message_attachments_dm_conversation_id ON message_attachments(dm_conversation_id);
 
 -- Direct message conversations
 CREATE TABLE IF NOT EXISTS dm_conversations (
@@ -247,7 +251,10 @@ CREATE TABLE IF NOT EXISTS direct_messages (
     sender_id UUID NOT NULL REFERENCES users(id),
     encrypted_content BYTEA NOT NULL,
     nonce BYTEA NOT NULL,
+    reply_to_id UUID,
     is_edited BOOLEAN DEFAULT FALSE,
+    reactions JSONB DEFAULT '{}'::jsonb,
+    link_previews JSONB DEFAULT '[]'::jsonb,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     deleted_at TIMESTAMPTZ
@@ -255,6 +262,7 @@ CREATE TABLE IF NOT EXISTS direct_messages (
 
 CREATE INDEX IF NOT EXISTS idx_direct_messages_conversation_id ON direct_messages(conversation_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_direct_messages_sender_id ON direct_messages(sender_id);
+CREATE INDEX IF NOT EXISTS idx_direct_messages_reply_to_id ON direct_messages(reply_to_id);
 
 -- User blocks
 CREATE TABLE IF NOT EXISTS user_blocks (

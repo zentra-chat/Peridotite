@@ -30,7 +30,6 @@ const (
 	AuditActionMemberKick       = "member.kick"
 	AuditActionMemberBan        = "member.ban"
 	AuditActionMemberUnban      = "member.unban"
-	AuditActionMemberRoleUpdate = "member.role_update"
 	AuditActionRoleCreate       = "role.create"
 	AuditActionRoleUpdate       = "role.update"
 	AuditActionRoleDelete       = "role.delete"

@@ -18,11 +18,5 @@ EXCEPTION
     WHEN duplicate_object THEN null;
 END $$;
 
-DO $$ BEGIN
-    CREATE TYPE member_role AS ENUM ('owner', 'admin', 'moderator', 'member');
-EXCEPTION
-    WHEN duplicate_object THEN null;
-END $$;
-
 -- Grant privileges
 GRANT ALL PRIVILEGES ON DATABASE zentra TO zentra;

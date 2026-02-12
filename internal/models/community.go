@@ -6,14 +6,6 @@ import (
 	"github.com/google/uuid"
 )
 
-type MemberRole string
-
-const (
-	MemberRoleOwner     MemberRole = "owner"
-	MemberRoleAdmin     MemberRole = "admin"
-	MemberRoleModerator MemberRole = "moderator"
-	MemberRoleMember    MemberRole = "member"
-)
 
 type Community struct {
 	ID          uuid.UUID  `json:"id" db:"id"`
@@ -35,7 +27,6 @@ type CommunityMember struct {
 	CommunityID uuid.UUID  `json:"communityId" db:"community_id"`
 	UserID      uuid.UUID  `json:"userId" db:"user_id"`
 	Nickname    *string    `json:"nickname,omitempty" db:"nickname"`
-	Role        MemberRole `json:"role" db:"role"`
 	JoinedAt    time.Time  `json:"joinedAt" db:"joined_at"`
 }
 
