@@ -154,6 +154,7 @@ func (s *Service) CreateMessage(ctx context.Context, channelID, userID uuid.UUID
 		&msg.ReplyToID, &linkPreviewRaw, &msg.IsPinned, &msg.IsEdited, &msg.CreatedAt, &msg.UpdatedAt,
 	)
 	if err != nil {
+		log.Error().Err(err).Msg("Failed to insert message")
 		return nil, err
 	}
 	msg.LinkPreviews = messaging.DecodeLinkPreviews(linkPreviewRaw)
@@ -161,6 +162,7 @@ func (s *Service) CreateMessage(ctx context.Context, channelID, userID uuid.UUID
 	// Decrypt for response
 	contentStr, err := s.cipher.Decrypt(encContent, nil)
 	if err != nil {
+		log.Error().Err(err).Msg("Failed to decrypt message after insert")
 		return nil, err
 	}
 	msg.Content = &contentStr
@@ -173,6 +175,7 @@ func (s *Service) CreateMessage(ctx context.Context, channelID, userID uuid.UUID
 				messageID, now, attachmentID,
 			)
 			if err != nil {
+				log.Error().Err(err).Msg("Failed to link attachment")
 				return nil, err
 			}
 		}
@@ -184,16 +187,19 @@ func (s *Service) CreateMessage(ctx context.Context, channelID, userID uuid.UUID
 		now, channelID,
 	)
 	if err != nil {
+		log.Error().Err(err).Msg("Failed to update channel last_message_at")
 		return nil, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
+		log.Error().Err(err).Msg("Failed to commit message transaction")
 		return nil, err
 	}
 
 	// Fetch complete response
 	resp, err := s.GetMessage(ctx, messageID, userID)
 	if err != nil {
+		log.Error().Err(err).Msg("Failed to fetch message after creation")
 		return nil, err
 	}
 
@@ -227,6 +233,7 @@ func (s *Service) GetMessage(ctx context.Context, messageID, userID uuid.UUID) (
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrMessageNotFound
 		}
+		log.Error().Err(err).Msg("Failed to scan message in GetMessage")
 		return nil, err
 	}
 
@@ -353,6 +360,7 @@ func (s *Service) GetChannelMessages(ctx context.Context, channelID, userID uuid
 			&author.ID, &author.Username, &author.DisplayName, &author.AvatarURL, &author.Bio, &author.Status, &author.CustomStatus, &author.CreatedAt,
 		)
 		if err != nil {
+			log.Error().Err(err).Msg("Failed to scan message in GetChannelMessages")
 			return nil, err
 		}
 
@@ -620,7 +628,7 @@ func (s *Service) GetPinnedMessages(ctx context.Context, channelID, userID uuid.
 
 	query := `
 		SELECT m.id, m.channel_id, m.author_id, m.encrypted_content, m.reply_to_id,
-		       m.link_previews, m.is_pinned, m.created_at, m.updated_at, m.is_edited,
+		       m.link_previews, m.is_pinned, m.is_edited, m.reactions, m.created_at, m.updated_at,
 		       u.id, u.username, u.display_name, u.avatar_url, u.bio, u.status, u.custom_status, u.created_at
 		FROM messages m
 		JOIN users u ON u.id = m.author_id
@@ -630,6 +638,7 @@ func (s *Service) GetPinnedMessages(ctx context.Context, channelID, userID uuid.
 
 	rows, err := s.db.Query(ctx, query, channelID)
 	if err != nil {
+		log.Error().Err(err).Msg("Failed to query pinned messages")
 		return nil, err
 	}
 	defer rows.Close()
@@ -643,10 +652,11 @@ func (s *Service) GetPinnedMessages(ctx context.Context, channelID, userID uuid.
 
 		err := rows.Scan(
 			&msg.ID, &msg.ChannelID, &msg.AuthorID, &encContent,
-			&msg.ReplyToID, &linkPreviewRaw, &msg.IsPinned, &msg.CreatedAt, &msg.UpdatedAt, &msg.IsEdited,
+			&msg.ReplyToID, &linkPreviewRaw, &msg.IsPinned, &msg.IsEdited, &msg.Reactions, &msg.CreatedAt, &msg.UpdatedAt,
 			&author.ID, &author.Username, &author.DisplayName, &author.AvatarURL, &author.Bio, &author.Status, &author.CustomStatus, &author.CreatedAt,
 		)
 		if err != nil {
+			log.Error().Err(err).Msg("Failed to scan pinned message")
 			return nil, err
 		}
 
