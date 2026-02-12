@@ -401,52 +401,116 @@ func (s *Service) DeleteChannelPermission(ctx context.Context, channelID, userID
 // Permission helpers
 // I don't like this function, but it will do for now.
 func (s *Service) requireChannelPermission(ctx context.Context, communityID, userID uuid.UUID, permission int64) error {
-	member, err := s.communityService.GetMember(ctx, communityID, userID)
-	if err != nil {
-		return err
+	if err := s.communityService.RequirePermission(ctx, communityID, userID, permission); err != nil {
+		return ErrInsufficientPerms
 	}
 
-	// Owner and admin have all permissions
-	if member.Role == models.MemberRoleOwner || member.Role == models.MemberRoleAdmin {
-		return nil
-	}
-
-	// Check specific permissions
-	community, err := s.communityService.GetCommunity(ctx, communityID)
-	if err != nil {
-		return err
-	}
-	if community.OwnerID == userID {
-		return nil
-	}
-
-	return ErrInsufficientPerms
+	return nil
 }
 
 func (s *Service) CanAccessChannel(ctx context.Context, channelID, userID uuid.UUID) bool {
-	channel, err := s.GetChannel(ctx, channelID)
+	permissions, err := s.getChannelPermissions(ctx, channelID, userID)
 	if err != nil {
 		return false
 	}
 
-	return s.communityService.IsMember(ctx, channel.CommunityID, userID)
+	return models.HasPermission(permissions, models.PermissionViewChannels)
 }
 
 func (s *Service) CanSendMessage(ctx context.Context, channelID, userID uuid.UUID) bool {
-	channel, err := s.GetChannel(ctx, channelID)
+	permissions, err := s.getChannelPermissions(ctx, channelID, userID)
 	if err != nil {
 		return false
 	}
 
-	return s.communityService.IsMember(ctx, channel.CommunityID, userID)
+	return models.HasPermission(permissions, models.PermissionSendMessages)
 }
 
 func (s *Service) CanManageMessages(ctx context.Context, channelID, userID uuid.UUID) bool {
-	channel, err := s.GetChannel(ctx, channelID)
+	permissions, err := s.getChannelPermissions(ctx, channelID, userID)
 	if err != nil {
 		return false
 	}
 
-	err = s.requireChannelPermission(ctx, channel.CommunityID, userID, models.PermissionManageMessages)
-	return err == nil
+	return models.HasPermission(permissions, models.PermissionManageMessages)
+}
+
+func (s *Service) getChannelPermissions(ctx context.Context, channelID, userID uuid.UUID) (int64, error) {
+	channel, err := s.GetChannel(ctx, channelID)
+	if err != nil {
+		return 0, err
+	}
+
+	basePermissions, err := s.communityService.GetMemberPermissions(ctx, channel.CommunityID, userID)
+	if err != nil {
+		return 0, err
+	}
+
+	if basePermissions&models.PermissionAdministrator != 0 {
+		return basePermissions, nil
+	}
+
+	member, err := s.communityService.GetMember(ctx, channel.CommunityID, userID)
+	if err != nil {
+		return 0, err
+	}
+
+	roleIDs, err := s.communityService.GetMemberRoleIDs(ctx, channel.CommunityID, userID)
+	if err != nil {
+		return 0, err
+	}
+	if roleIDs == nil {
+		roleIDs = []uuid.UUID{}
+	}
+
+	defaultRole, err := s.communityService.GetDefaultRole(ctx, channel.CommunityID)
+	if err == nil && defaultRole != nil {
+		roleIDs = append(roleIDs, defaultRole.ID)
+	}
+
+	rows, err := s.db.Query(ctx,
+		`SELECT target_type, target_id, allow_permissions, deny_permissions
+		FROM channel_permissions
+		WHERE channel_id = $1
+		AND (
+			(target_type = 'role' AND target_id = ANY($2))
+			OR (target_type = 'member' AND target_id = $3)
+		)`,
+		channelID, roleIDs, member.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	var roleAllow int64
+	var roleDeny int64
+	var memberAllow int64
+	var memberDeny int64
+	for rows.Next() {
+		var targetType string
+		var targetID uuid.UUID
+		var allowPerms int64
+		var denyPerms int64
+		if err := rows.Scan(&targetType, &targetID, &allowPerms, &denyPerms); err != nil {
+			return 0, err
+		}
+
+		if targetType == "member" {
+			memberAllow |= allowPerms
+			memberDeny |= denyPerms
+			continue
+		}
+
+		roleAllow |= allowPerms
+		roleDeny |= denyPerms
+	}
+
+	permissions := basePermissions
+	permissions &= ^roleDeny
+	permissions |= roleAllow
+	permissions &= ^memberDeny
+	permissions |= memberAllow
+
+	return permissions, nil
 }

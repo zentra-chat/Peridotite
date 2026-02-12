@@ -424,6 +424,52 @@ func (s *Service) GetMembers(ctx context.Context, communityID uuid.UUID, limit, 
 		members = append(members, m)
 	}
 
+	if len(members) > 0 {
+		memberIDs := make([]uuid.UUID, 0, len(members))
+		memberByID := make(map[uuid.UUID]*models.CommunityMemberWithUser, len(members))
+		for _, member := range members {
+			memberIDs = append(memberIDs, member.ID)
+			memberByID[member.ID] = member
+		}
+
+		rows, err := s.db.Query(ctx,
+			`SELECT mr.member_id, r.id, r.community_id, r.name, r.color, r.position, r.permissions, r.is_default, r.created_at, r.updated_at
+			FROM member_roles mr
+			JOIN roles r ON r.id = mr.role_id
+			WHERE mr.member_id = ANY($1)
+			ORDER BY r.position DESC`,
+			memberIDs,
+		)
+		if err != nil {
+			return nil, 0, err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var memberID uuid.UUID
+			r := &models.Role{}
+			err := rows.Scan(
+				&memberID, &r.ID, &r.CommunityID, &r.Name, &r.Color, &r.Position,
+				&r.Permissions, &r.IsDefault, &r.CreatedAt, &r.UpdatedAt,
+			)
+			if err != nil {
+				return nil, 0, err
+			}
+			if member, ok := memberByID[memberID]; ok {
+				member.Roles = append(member.Roles, r)
+			}
+		}
+
+		defaultRole, err := s.GetDefaultRole(ctx, communityID)
+		if err == nil && defaultRole != nil {
+			for _, member := range members {
+				if len(member.Roles) == 0 {
+					member.Roles = []*models.Role{defaultRole}
+				}
+			}
+		}
+	}
+
 	return members, total, nil
 }
 
@@ -493,12 +539,37 @@ func (s *Service) addMember(ctx context.Context, communityID, userID uuid.UUID) 
 		return err
 	}
 
-	_, err = s.db.Exec(ctx,
-		`INSERT INTO community_members (id, community_id, user_id, role, joined_at)
-		VALUES ($1, $2, $3, $4, NOW())`,
-		uuid.New(), communityID, userID, models.MemberRoleMember,
-	)
-	return err
+	memberID := uuid.New()
+	return database.WithTransaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		_, err = tx.Exec(ctx,
+			`INSERT INTO community_members (id, community_id, user_id, role, joined_at)
+			VALUES ($1, $2, $3, $4, NOW())`,
+			memberID, communityID, userID, models.MemberRoleMember,
+		)
+		if err != nil {
+			return err
+		}
+
+		var defaultRoleID uuid.UUID
+		err = tx.QueryRow(ctx,
+			`SELECT id FROM roles WHERE community_id = $1 AND is_default = TRUE`,
+			communityID,
+		).Scan(&defaultRoleID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			return err
+		}
+
+		_, err = tx.Exec(ctx,
+			`INSERT INTO member_roles (member_id, role_id)
+			VALUES ($1, $2)
+			ON CONFLICT DO NOTHING`,
+			memberID, defaultRoleID,
+		)
+		return err
+	})
 }
 
 func (s *Service) LeaveCommunity(ctx context.Context, communityID, userID uuid.UUID) error {
@@ -704,6 +775,12 @@ type CreateRoleRequest struct {
 	Permissions int64   `json:"permissions"`
 }
 
+type UpdateRoleRequest struct {
+	Name        *string `json:"name" validate:"omitempty,min=1,max=64"`
+	Color       *string `json:"color" validate:"omitempty,hexcolor"`
+	Permissions *int64  `json:"permissions"`
+}
+
 func (s *Service) CreateRole(ctx context.Context, communityID, userID uuid.UUID, req *CreateRoleRequest) (*models.Role, error) {
 	if err := s.requirePermission(ctx, communityID, userID, models.PermissionManageRoles); err != nil {
 		return nil, err
@@ -765,6 +842,232 @@ func (s *Service) DeleteRole(ctx context.Context, communityID, roleID, userID uu
 	return err
 }
 
+func (s *Service) UpdateRole(ctx context.Context, communityID, roleID, userID uuid.UUID, req *UpdateRoleRequest) (*models.Role, error) {
+	if err := s.requirePermission(ctx, communityID, userID, models.PermissionManageRoles); err != nil {
+		return nil, err
+	}
+
+	role := &models.Role{}
+	if err := s.db.QueryRow(ctx,
+		`SELECT id, community_id, name, color, position, permissions, is_default, created_at, updated_at
+		FROM roles WHERE id = $1 AND community_id = $2`,
+		roleID, communityID,
+	).Scan(
+		&role.ID, &role.CommunityID, &role.Name, &role.Color, &role.Position,
+		&role.Permissions, &role.IsDefault, &role.CreatedAt, &role.UpdatedAt,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrRoleNotFound
+		}
+		return nil, err
+	}
+
+	_, err := s.db.Exec(ctx,
+		`UPDATE roles SET
+			name = COALESCE($3, name),
+			color = COALESCE($4, color),
+			permissions = COALESCE($5, permissions),
+			updated_at = NOW()
+		WHERE id = $1 AND community_id = $2`,
+		roleID, communityID, req.Name, req.Color, req.Permissions,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.GetRole(ctx, communityID, roleID)
+}
+
+func (s *Service) GetRole(ctx context.Context, communityID, roleID uuid.UUID) (*models.Role, error) {
+	role := &models.Role{}
+	err := s.db.QueryRow(ctx,
+		`SELECT id, community_id, name, color, position, permissions, is_default, created_at, updated_at
+		FROM roles WHERE id = $1 AND community_id = $2`,
+		roleID, communityID,
+	).Scan(
+		&role.ID, &role.CommunityID, &role.Name, &role.Color, &role.Position,
+		&role.Permissions, &role.IsDefault, &role.CreatedAt, &role.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrRoleNotFound
+		}
+		return nil, err
+	}
+
+	return role, nil
+}
+
+func (s *Service) GetDefaultRole(ctx context.Context, communityID uuid.UUID) (*models.Role, error) {
+	role := &models.Role{}
+	err := s.db.QueryRow(ctx,
+		`SELECT id, community_id, name, color, position, permissions, is_default, created_at, updated_at
+		FROM roles WHERE community_id = $1 AND is_default = TRUE`,
+		communityID,
+	).Scan(
+		&role.ID, &role.CommunityID, &role.Name, &role.Color, &role.Position,
+		&role.Permissions, &role.IsDefault, &role.CreatedAt, &role.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrRoleNotFound
+		}
+		return nil, err
+	}
+
+	return role, nil
+}
+
+func (s *Service) GetMemberRoles(ctx context.Context, communityID, userID uuid.UUID) ([]*models.Role, error) {
+	member, err := s.GetMember(ctx, communityID, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := s.db.Query(ctx,
+		`SELECT r.id, r.community_id, r.name, r.color, r.position, r.permissions, r.is_default, r.created_at, r.updated_at
+		FROM member_roles mr
+		JOIN roles r ON r.id = mr.role_id
+		WHERE mr.member_id = $1
+		ORDER BY r.position DESC`,
+		member.ID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var roles []*models.Role
+	for rows.Next() {
+		r := &models.Role{}
+		err := rows.Scan(
+			&r.ID, &r.CommunityID, &r.Name, &r.Color, &r.Position,
+			&r.Permissions, &r.IsDefault, &r.CreatedAt, &r.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		roles = append(roles, r)
+	}
+
+	if len(roles) == 0 {
+		defaultRole, err := s.GetDefaultRole(ctx, communityID)
+		if err == nil && defaultRole != nil {
+			roles = append(roles, defaultRole)
+		}
+	}
+
+	return roles, nil
+}
+
+func (s *Service) GetMemberRoleIDs(ctx context.Context, communityID, userID uuid.UUID) ([]uuid.UUID, error) {
+	member, err := s.GetMember(ctx, communityID, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := s.db.Query(ctx,
+		`SELECT role_id FROM member_roles WHERE member_id = $1`,
+		member.ID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var roleIDs []uuid.UUID
+	for rows.Next() {
+		var roleID uuid.UUID
+		if err := rows.Scan(&roleID); err != nil {
+			return nil, err
+		}
+		roleIDs = append(roleIDs, roleID)
+	}
+
+	return roleIDs, nil
+}
+
+func (s *Service) SetMemberRoles(ctx context.Context, communityID, actorID, targetID uuid.UUID, roleIDs []uuid.UUID) error {
+	if err := s.requirePermission(ctx, communityID, actorID, models.PermissionManageRoles); err != nil {
+		return err
+	}
+
+	community, err := s.GetCommunity(ctx, communityID)
+	if err != nil {
+		return err
+	}
+	if community.OwnerID == targetID && community.OwnerID != actorID {
+		return ErrNotOwner
+	}
+
+	member, err := s.GetMember(ctx, communityID, targetID)
+	if err != nil {
+		return err
+	}
+
+	uniqueRoleIDs := make(map[uuid.UUID]struct{}, len(roleIDs))
+	for _, roleID := range roleIDs {
+		uniqueRoleIDs[roleID] = struct{}{}
+	}
+
+	filteredIDs := make([]uuid.UUID, 0, len(uniqueRoleIDs))
+	if len(uniqueRoleIDs) > 0 {
+		roleIDList := make([]uuid.UUID, 0, len(uniqueRoleIDs))
+		for roleID := range uniqueRoleIDs {
+			roleIDList = append(roleIDList, roleID)
+		}
+
+		rows, err := s.db.Query(ctx,
+			`SELECT id, is_default FROM roles WHERE community_id = $1 AND id = ANY($2)`,
+			communityID, roleIDList,
+		)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		foundIDs := make(map[uuid.UUID]bool, len(roleIDList))
+		filteredIDs = filteredIDs[:0]
+		for rows.Next() {
+			var roleID uuid.UUID
+			var isDefault bool
+			if err := rows.Scan(&roleID, &isDefault); err != nil {
+				return err
+			}
+			foundIDs[roleID] = true
+			if !isDefault {
+				filteredIDs = append(filteredIDs, roleID)
+			}
+		}
+
+		if len(foundIDs) != len(roleIDList) {
+			return ErrRoleNotFound
+		}
+	}
+
+	return database.WithTransaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			`DELETE FROM member_roles WHERE member_id = $1`,
+			member.ID,
+		)
+		if err != nil {
+			return err
+		}
+
+		for _, roleID := range filteredIDs {
+			_, err := tx.Exec(ctx,
+				`INSERT INTO member_roles (member_id, role_id) VALUES ($1, $2)`,
+				member.ID, roleID,
+			)
+			if err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+}
+
 // Permission helpers
 
 func (s *Service) RequirePermission(ctx context.Context, communityID, userID uuid.UUID, permission int64) error {
@@ -772,43 +1075,9 @@ func (s *Service) RequirePermission(ctx context.Context, communityID, userID uui
 }
 
 func (s *Service) requirePermission(ctx context.Context, communityID, userID uuid.UUID, permission int64) error {
-	member, err := s.GetMember(ctx, communityID, userID)
+	userPermissions, err := s.GetMemberPermissions(ctx, communityID, userID)
 	if err != nil {
 		return err
-	}
-
-	// Owner has all permissions
-	community, err := s.GetCommunity(ctx, communityID)
-	if err != nil {
-		return err
-	}
-	if community.OwnerID == userID {
-		return nil
-	}
-
-	// Admin role has all permissions
-	if member.Role == models.MemberRoleAdmin || member.Role == models.MemberRoleOwner {
-		return nil
-	}
-
-	// Check specific permissions via roles
-	var userPermissions int64
-	err = s.db.QueryRow(ctx,
-		`SELECT COALESCE(BIT_OR(r.permissions), 0)
-		FROM member_roles mr
-		JOIN roles r ON r.id = mr.role_id
-		WHERE mr.member_id = $1`,
-		member.ID,
-	).Scan(&userPermissions)
-	if err != nil {
-		// If no roles assigned, use default role permissions
-		err = s.db.QueryRow(ctx,
-			`SELECT permissions FROM roles WHERE community_id = $1 AND is_default = TRUE`,
-			communityID,
-		).Scan(&userPermissions)
-		if err != nil {
-			return ErrInsufficientPerms
-		}
 	}
 
 	if !models.HasPermission(userPermissions, permission) {
@@ -816,6 +1085,51 @@ func (s *Service) requirePermission(ctx context.Context, communityID, userID uui
 	}
 
 	return nil
+}
+
+func (s *Service) GetMemberPermissions(ctx context.Context, communityID, userID uuid.UUID) (int64, error) {
+	member, err := s.GetMember(ctx, communityID, userID)
+	if err != nil {
+		return 0, err
+	}
+
+	community, err := s.GetCommunity(ctx, communityID)
+	if err != nil {
+		return 0, err
+	}
+
+	if community.OwnerID == userID {
+		return models.PermissionAdministrator, nil
+	}
+
+	if member.Role == models.MemberRoleAdmin || member.Role == models.MemberRoleOwner {
+		return models.PermissionAdministrator, nil
+	}
+
+	var userPermissions int64
+	var roleCount int
+	err = s.db.QueryRow(ctx,
+		`SELECT COALESCE(BIT_OR(r.permissions), 0), COUNT(r.id)
+		FROM member_roles mr
+		JOIN roles r ON r.id = mr.role_id
+		WHERE mr.member_id = $1`,
+		member.ID,
+	).Scan(&userPermissions, &roleCount)
+	if err != nil {
+		return 0, err
+	}
+
+	if roleCount == 0 {
+		err = s.db.QueryRow(ctx,
+			`SELECT permissions FROM roles WHERE community_id = $1 AND is_default = TRUE`,
+			communityID,
+		).Scan(&userPermissions)
+		if err != nil {
+			return 0, ErrInsufficientPerms
+		}
+	}
+
+	return userPermissions, nil
 }
 
 func (s *Service) IsMember(ctx context.Context, communityID, userID uuid.UUID) bool {

@@ -41,7 +41,8 @@ type CommunityMember struct {
 
 type CommunityMemberWithUser struct {
 	CommunityMember
-	User *PublicUser `json:"user,omitempty"`
+	Roles []*Role     `json:"roles,omitempty"`
+	User  *PublicUser `json:"user,omitempty"`
 }
 
 type CommunityInvite struct {

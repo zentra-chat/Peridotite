@@ -50,6 +50,8 @@ func (h *Handler) Routes(secret string) chi.Router {
 			r.Get("/members", h.GetMembers)
 			r.Delete("/members/{userId}", h.KickMember)
 			r.Patch("/members/{userId}/role", h.UpdateMemberRole)
+			r.Get("/members/{userId}/roles", h.GetMemberRoles)
+			r.Put("/members/{userId}/roles", h.SetMemberRoles)
 
 			// Invites
 			r.Get("/invites", h.GetInvites)
@@ -59,6 +61,7 @@ func (h *Handler) Routes(secret string) chi.Router {
 			// Roles
 			r.Get("/roles", h.GetRoles)
 			r.Post("/roles", h.CreateRole)
+			r.Patch("/roles/{roleId}", h.UpdateRole)
 			r.Delete("/roles/{roleId}", h.DeleteRole)
 		})
 	})
@@ -655,6 +658,136 @@ func (h *Handler) DeleteRole(w http.ResponseWriter, r *http.Request) {
 			utils.RespondError(w, http.StatusNotFound, "Role not found")
 		default:
 			utils.RespondError(w, http.StatusInternalServerError, "Failed to delete role")
+		}
+		return
+	}
+
+	utils.RespondNoContent(w)
+}
+
+func (h *Handler) UpdateRole(w http.ResponseWriter, r *http.Request) {
+	userID, err := middleware.RequireAuth(r.Context())
+	if err != nil {
+		utils.RespondError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	communityID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		utils.RespondError(w, http.StatusBadRequest, "Invalid community ID")
+		return
+	}
+
+	roleID, err := uuid.Parse(chi.URLParam(r, "roleId"))
+	if err != nil {
+		utils.RespondError(w, http.StatusBadRequest, "Invalid role ID")
+		return
+	}
+
+	var req UpdateRoleRequest
+	if err := utils.DecodeJSON(r, &req); err != nil {
+		utils.RespondError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if err := utils.Validate(&req); err != nil {
+		utils.RespondValidationError(w, utils.FormatValidationErrors(err))
+		return
+	}
+
+	role, err := h.service.UpdateRole(r.Context(), communityID, roleID, userID, &req)
+	if err != nil {
+		switch err {
+		case ErrInsufficientPerms:
+			utils.RespondError(w, http.StatusForbidden, "Insufficient permissions")
+		case ErrRoleNotFound:
+			utils.RespondError(w, http.StatusNotFound, "Role not found")
+		default:
+			utils.RespondError(w, http.StatusInternalServerError, "Failed to update role")
+		}
+		return
+	}
+
+	utils.RespondSuccess(w, role)
+}
+
+func (h *Handler) GetMemberRoles(w http.ResponseWriter, r *http.Request) {
+	actorID, err := middleware.RequireAuth(r.Context())
+	if err != nil {
+		utils.RespondError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	communityID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		utils.RespondError(w, http.StatusBadRequest, "Invalid community ID")
+		return
+	}
+
+	targetID, err := uuid.Parse(chi.URLParam(r, "userId"))
+	if err != nil {
+		utils.RespondError(w, http.StatusBadRequest, "Invalid user ID")
+		return
+	}
+
+	if actorID != targetID {
+		if err := h.service.RequirePermission(r.Context(), communityID, actorID, models.PermissionManageRoles); err != nil {
+			utils.RespondError(w, http.StatusForbidden, "Insufficient permissions")
+			return
+		}
+	}
+
+	roles, err := h.service.GetMemberRoles(r.Context(), communityID, targetID)
+	if err != nil {
+		switch err {
+		case ErrNotMember:
+			utils.RespondError(w, http.StatusNotFound, "Member not found")
+		default:
+			utils.RespondError(w, http.StatusInternalServerError, "Failed to get member roles")
+		}
+		return
+	}
+
+	utils.RespondSuccess(w, roles)
+}
+
+func (h *Handler) SetMemberRoles(w http.ResponseWriter, r *http.Request) {
+	actorID, err := middleware.RequireAuth(r.Context())
+	if err != nil {
+		utils.RespondError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	communityID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		utils.RespondError(w, http.StatusBadRequest, "Invalid community ID")
+		return
+	}
+
+	targetID, err := uuid.Parse(chi.URLParam(r, "userId"))
+	if err != nil {
+		utils.RespondError(w, http.StatusBadRequest, "Invalid user ID")
+		return
+	}
+
+	var req struct {
+		RoleIDs []uuid.UUID `json:"roleIds"`
+	}
+	if err := utils.DecodeJSON(r, &req); err != nil {
+		utils.RespondError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if err := h.service.SetMemberRoles(r.Context(), communityID, actorID, targetID, req.RoleIDs); err != nil {
+		switch err {
+		case ErrInsufficientPerms, ErrNotOwner:
+			utils.RespondError(w, http.StatusForbidden, "Insufficient permissions")
+		case ErrRoleNotFound:
+			utils.RespondError(w, http.StatusNotFound, "Role not found")
+		case ErrNotMember:
+			utils.RespondError(w, http.StatusNotFound, "Member not found")
+		default:
+			utils.RespondError(w, http.StatusInternalServerError, "Failed to update member roles")
 		}
 		return
 	}

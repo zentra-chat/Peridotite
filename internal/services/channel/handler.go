@@ -152,6 +152,14 @@ func (h *Handler) GetCommunityChannels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	accessible := channels[:0]
+	for _, channel := range channels {
+		if h.service.CanAccessChannel(r.Context(), channel.ID, userID) {
+			accessible = append(accessible, channel)
+		}
+	}
+	channels = accessible
+
 	utils.RespondSuccess(w, channels)
 }
 
