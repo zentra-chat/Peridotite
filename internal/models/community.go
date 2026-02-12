@@ -6,7 +6,6 @@ import (
 	"github.com/google/uuid"
 )
 
-
 type Community struct {
 	ID          uuid.UUID  `json:"id" db:"id"`
 	Name        string     `json:"name" db:"name"`
@@ -23,11 +22,11 @@ type Community struct {
 }
 
 type CommunityMember struct {
-	ID          uuid.UUID  `json:"id" db:"id"`
-	CommunityID uuid.UUID  `json:"communityId" db:"community_id"`
-	UserID      uuid.UUID  `json:"userId" db:"user_id"`
-	Nickname    *string    `json:"nickname,omitempty" db:"nickname"`
-	JoinedAt    time.Time  `json:"joinedAt" db:"joined_at"`
+	ID          uuid.UUID `json:"id" db:"id"`
+	CommunityID uuid.UUID `json:"communityId" db:"community_id"`
+	UserID      uuid.UUID `json:"userId" db:"user_id"`
+	Nickname    *string   `json:"nickname,omitempty" db:"nickname"`
+	JoinedAt    time.Time `json:"joinedAt" db:"joined_at"`
 }
 
 type CommunityMemberWithUser struct {
