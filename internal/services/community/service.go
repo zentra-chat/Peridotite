@@ -2,8 +2,12 @@ package community
 
 import (
 	"context"
+	"crypto/sha1"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,8 +16,11 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 	"github.com/zentra/peridotite/internal/models"
+	"github.com/zentra/peridotite/internal/services/messaging"
+	"github.com/zentra/peridotite/internal/utils"
 	"github.com/zentra/peridotite/pkg/auth"
 	"github.com/zentra/peridotite/pkg/database"
+	"golang.org/x/crypto/bcrypt"
 )
 
 var (
@@ -28,12 +35,13 @@ var (
 )
 
 type Service struct {
-	db    *pgxpool.Pool
-	redis *redis.Client
+	db     *pgxpool.Pool
+	redis  *redis.Client
+	cipher messaging.ContentCipher
 }
 
-func NewService(db *pgxpool.Pool, redis *redis.Client) *Service {
-	return &Service{db: db, redis: redis}
+func NewService(db *pgxpool.Pool, redis *redis.Client, encryptionKey []byte) *Service {
+	return &Service{db: db, redis: redis, cipher: messaging.NewChannelCipher(encryptionKey)}
 }
 
 type CreateCommunityRequest struct {
@@ -41,6 +49,74 @@ type CreateCommunityRequest struct {
 	Description *string `json:"description" validate:"omitempty,max=1000"`
 	IsPublic    bool    `json:"isPublic"`
 	IsOpen      bool    `json:"isOpen"`
+}
+
+type DiscordImportRequest struct {
+	OwnerID  uuid.UUID              `json:"ownerId" validate:"required"`
+	Guild    DiscordImportGuild     `json:"guild" validate:"required"`
+	Channels []DiscordImportChannel `json:"channels" validate:"required,min=1,max=2000"`
+	Invite   DiscordInviteOptions   `json:"invite"`
+}
+
+type DiscordImportGuild struct {
+	Name        string  `json:"name" validate:"required,min=2,max=100"`
+	Description *string `json:"description" validate:"omitempty,max=1000"`
+	IconURL     *string `json:"iconUrl" validate:"omitempty,url"`
+	BannerURL   *string `json:"bannerUrl" validate:"omitempty,url"`
+	IsPublic    bool    `json:"isPublic"`
+	IsOpen      bool    `json:"isOpen"`
+}
+
+type DiscordInviteOptions struct {
+	MaxUses   *int   `json:"maxUses" validate:"omitempty,min=1,max=10000"`
+	ExpiresIn *int64 `json:"expiresIn" validate:"omitempty,min=60,max=2592000"`
+}
+
+type DiscordImportChannel struct {
+	SourceID         string                 `json:"sourceId" validate:"required,max=128"`
+	Name             string                 `json:"name" validate:"required,max=100"`
+	Type             string                 `json:"type" validate:"omitempty,max=32"`
+	Topic            *string                `json:"topic" validate:"omitempty,max=1024"`
+	CategoryName     *string                `json:"categoryName" validate:"omitempty,max=64"`
+	CategoryPosition *int                   `json:"categoryPosition"`
+	Position         int                    `json:"position"`
+	IsNSFW           bool                   `json:"isNsfw"`
+	SlowmodeSeconds  int                    `json:"slowmodeSeconds" validate:"min=0,max=21600"`
+	Messages         []DiscordImportMessage `json:"messages"`
+}
+
+type DiscordImportMessage struct {
+	SourceID        string                    `json:"sourceId" validate:"required,max=128"`
+	AuthorName      *string                   `json:"authorName" validate:"omitempty,max=64"`
+	AuthorDiscordID *string                   `json:"authorDiscordId" validate:"omitempty,max=64"`
+	AuthorAvatarURL *string                   `json:"authorAvatarUrl" validate:"omitempty,url,max=2000"`
+	Content         string                    `json:"content" validate:"max=4000"`
+	CreatedAt       *time.Time                `json:"createdAt"`
+	EditedAt        *time.Time                `json:"editedAt"`
+	Pinned          bool                      `json:"pinned"`
+	ReplyToSourceID *string                   `json:"replyToSourceId" validate:"omitempty,max=128"`
+	Attachments     []DiscordImportAttachment `json:"attachments" validate:"max=32"`
+}
+
+type DiscordImportAttachment struct {
+	Filename     string  `json:"filename" validate:"required,max=255"`
+	URL          string  `json:"url" validate:"required,url,max=2000"`
+	Size         int64   `json:"size" validate:"min=0,max=1073741824"`
+	ContentType  *string `json:"contentType" validate:"omitempty,max=128"`
+	ThumbnailURL *string `json:"thumbnailUrl" validate:"omitempty,url,max=2000"`
+	Width        *int    `json:"width"`
+	Height       *int    `json:"height"`
+}
+
+type DiscordImportResponse struct {
+	Community      *models.Community `json:"community"`
+	InviteCode     string            `json:"inviteCode"`
+	InviteURL      string            `json:"inviteUrl"`
+	ImportedCounts struct {
+		Channels    int `json:"channels"`
+		Messages    int `json:"messages"`
+		Attachments int `json:"attachments"`
+	} `json:"importedCounts"`
 }
 
 func (s *Service) broadcast(ctx context.Context, communityID uuid.UUID, eventType string, data interface{}) {
@@ -143,6 +219,422 @@ func (s *Service) CreateCommunity(ctx context.Context, ownerID uuid.UUID, req *C
 	}
 
 	return community, nil
+}
+
+func (s *Service) ImportDiscordServer(ctx context.Context, req *DiscordImportRequest) (*DiscordImportResponse, error) {
+	if req == nil {
+		return nil, errors.New("request is required")
+	}
+
+	if s.cipher == nil {
+		return nil, errors.New("message cipher is not configured")
+	}
+
+	if err := utils.Validate(req); err != nil {
+		return nil, err
+	}
+
+	now := time.Now().UTC()
+	community := &models.Community{
+		ID:          uuid.New(),
+		Name:        req.Guild.Name,
+		Description: req.Guild.Description,
+		IconURL:     req.Guild.IconURL,
+		BannerURL:   req.Guild.BannerURL,
+		OwnerID:     req.OwnerID,
+		IsPublic:    req.Guild.IsPublic,
+		IsOpen:      req.Guild.IsOpen,
+		MemberCount: 0,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+
+	inviteCode, err := auth.GenerateInviteCode()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DiscordImportResponse{Community: community}
+	response.InviteCode = inviteCode
+	response.InviteURL = "/api/v1/communities/invite/" + inviteCode
+
+	err = database.WithTransaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			`INSERT INTO communities (id, name, description, icon_url, banner_url, owner_id, is_public, is_open, member_count, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+			community.ID, community.Name, community.Description, community.IconURL, community.BannerURL, community.OwnerID,
+			community.IsPublic, community.IsOpen, community.MemberCount, community.CreatedAt, community.UpdatedAt,
+		)
+		if err != nil {
+			return err
+		}
+
+		memberID := uuid.New()
+		_, err = tx.Exec(ctx,
+			`INSERT INTO community_members (id, community_id, user_id, joined_at)
+			VALUES ($1, $2, $3, NOW())`,
+			memberID, community.ID, req.OwnerID,
+		)
+		if err != nil {
+			return err
+		}
+
+		defaultRoleID := uuid.New()
+		_, err = tx.Exec(ctx,
+			`INSERT INTO roles (id, community_id, name, permissions, is_default, position)
+			VALUES ($1, $2, 'Member', $3, TRUE, 0)`,
+			defaultRoleID, community.ID, models.PermissionAllText,
+		)
+		if err != nil {
+			return err
+		}
+
+		_, err = tx.Exec(ctx,
+			`INSERT INTO member_roles (member_id, role_id) VALUES ($1, $2)`,
+			memberID, defaultRoleID,
+		)
+		if err != nil {
+			return err
+		}
+
+		categoryByName := make(map[string]uuid.UUID)
+		categoryPosByName := make(map[string]int)
+
+		for _, importedChannel := range req.Channels {
+			if importedChannel.CategoryName == nil || strings.TrimSpace(*importedChannel.CategoryName) == "" {
+				continue
+			}
+
+			categoryName := strings.TrimSpace(*importedChannel.CategoryName)
+			if _, exists := categoryByName[categoryName]; exists {
+				continue
+			}
+
+			categoryPosition := 0
+			if importedChannel.CategoryPosition != nil {
+				categoryPosition = *importedChannel.CategoryPosition
+			}
+
+			categoryID := uuid.New()
+			_, err = tx.Exec(ctx,
+				`INSERT INTO channel_categories (id, community_id, name, position, created_at)
+				VALUES ($1, $2, $3, $4, $5)`,
+				categoryID, community.ID, categoryName, categoryPosition, now,
+			)
+			if err != nil {
+				return err
+			}
+
+			categoryByName[categoryName] = categoryID
+			categoryPosByName[categoryName] = categoryPosition
+		}
+
+		createdMessageBySource := make(map[string]uuid.UUID)
+		createdMessageTimeByID := make(map[uuid.UUID]time.Time)
+		lastMessageAtByChannel := make(map[uuid.UUID]time.Time)
+		authorUserIDByKey := make(map[string]uuid.UUID)
+		memberIDByUserID := map[uuid.UUID]uuid.UUID{req.OwnerID: memberID}
+
+		for _, importedChannel := range req.Channels {
+			channelID := uuid.New()
+			channelType := normalizeImportedChannelType(importedChannel.Type)
+			channelName := utils.NormalizeChannelName(importedChannel.Name)
+			if channelName == "" {
+				channelName = fmt.Sprintf("channel-%s", channelID.String()[:8])
+			}
+
+			var categoryID *uuid.UUID
+			if importedChannel.CategoryName != nil {
+				if catID, ok := categoryByName[strings.TrimSpace(*importedChannel.CategoryName)]; ok {
+					categoryID = &catID
+				}
+			}
+
+			_, err = tx.Exec(ctx,
+				`INSERT INTO channels (id, community_id, category_id, name, topic, type, position, is_nsfw, slowmode_seconds, created_at, updated_at)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+				channelID, community.ID, categoryID, channelName, importedChannel.Topic, channelType,
+				importedChannel.Position, importedChannel.IsNSFW, importedChannel.SlowmodeSeconds, now, now,
+			)
+			if err != nil {
+				return err
+			}
+
+			response.ImportedCounts.Channels++
+
+			for messageIndex, importedMessage := range importedChannel.Messages {
+				createdAt := now.Add(time.Duration(response.ImportedCounts.Messages+messageIndex) * time.Millisecond)
+				if importedMessage.CreatedAt != nil && !importedMessage.CreatedAt.IsZero() {
+					createdAt = importedMessage.CreatedAt.UTC()
+				}
+
+				if err := ensureMessagePartition(ctx, tx, createdAt); err != nil {
+					fallback := now.Add(time.Duration(response.ImportedCounts.Messages+messageIndex) * time.Millisecond)
+					if partitionErr := ensureMessagePartition(ctx, tx, fallback); partitionErr != nil {
+						return fmt.Errorf("failed to prepare message partition: %w", err)
+					}
+					createdAt = fallback
+				}
+
+				authorID := req.OwnerID
+				authorKey := importedAuthorKey(importedMessage.AuthorDiscordID, importedMessage.AuthorName)
+				if authorKey != "" {
+					if cachedAuthorID, ok := authorUserIDByKey[authorKey]; ok {
+						authorID = cachedAuthorID
+					} else {
+						authorName := importedAuthorName(importedMessage.AuthorName)
+						avatarURL := importedMessage.AuthorAvatarURL
+						createdAuthorID, err := ensureImportedAuthorUser(ctx, tx, community.ID, authorKey, authorName, avatarURL)
+						if err != nil {
+							return err
+						}
+						authorUserIDByKey[authorKey] = createdAuthorID
+						authorID = createdAuthorID
+					}
+				}
+
+				if _, exists := memberIDByUserID[authorID]; !exists {
+					importedMemberID := uuid.New()
+					_, err = tx.Exec(ctx,
+						`INSERT INTO community_members (id, community_id, user_id, joined_at)
+						VALUES ($1, $2, $3, NOW())
+						ON CONFLICT (community_id, user_id) DO NOTHING`,
+						importedMemberID, community.ID, authorID,
+					)
+					if err != nil {
+						return err
+					}
+					_, err = tx.Exec(ctx,
+						`INSERT INTO member_roles (member_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+						importedMemberID, defaultRoleID,
+					)
+					if err != nil {
+						return err
+					}
+					memberIDByUserID[authorID] = importedMemberID
+				}
+
+				importedContent := importedMessage.Content
+
+				encryptedContent, _, err := s.cipher.Encrypt(importedContent)
+				if err != nil {
+					return err
+				}
+
+				messageID := uuid.New()
+				var replyToID *uuid.UUID
+				if importedMessage.ReplyToSourceID != nil {
+					if mappedReplyID, ok := createdMessageBySource[*importedMessage.ReplyToSourceID]; ok {
+						replyToID = &mappedReplyID
+					}
+				}
+
+				isEdited := importedMessage.EditedAt != nil
+				updatedAt := createdAt
+				if importedMessage.EditedAt != nil && !importedMessage.EditedAt.IsZero() {
+					updatedAt = importedMessage.EditedAt.UTC()
+				}
+				_, err = tx.Exec(ctx,
+					`INSERT INTO messages (id, channel_id, author_id, encrypted_content, reply_to_id, is_edited, is_pinned, reactions, link_previews, created_at, updated_at)
+					VALUES ($1, $2, $3, $4, $5, $6, $7, '{}'::jsonb, '[]'::jsonb, $8, $9)`,
+					messageID, channelID, authorID, encryptedContent, replyToID, isEdited, importedMessage.Pinned, createdAt, updatedAt,
+				)
+				if err != nil {
+					return err
+				}
+
+				if importedMessage.SourceID != "" {
+					createdMessageBySource[importedMessage.SourceID] = messageID
+				}
+				createdMessageTimeByID[messageID] = createdAt
+				lastMessageAtByChannel[channelID] = createdAt
+				response.ImportedCounts.Messages++
+
+				for _, attachment := range importedMessage.Attachments {
+					attachmentID := uuid.New()
+					_, err = tx.Exec(ctx,
+						`INSERT INTO message_attachments (
+							id, message_id, message_created_at, uploader_id, filename, file_url,
+							file_size, content_type, thumbnail_url, width, height, created_at
+						)
+						VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+						attachmentID, messageID, createdMessageTimeByID[messageID], authorID, attachment.Filename,
+						attachment.URL, attachment.Size, attachment.ContentType, attachment.ThumbnailURL,
+						attachment.Width, attachment.Height, createdAt,
+					)
+					if err != nil {
+						return err
+					}
+					response.ImportedCounts.Attachments++
+				}
+			}
+		}
+
+		for channelID, lastMessageAt := range lastMessageAtByChannel {
+			_, err = tx.Exec(ctx,
+				`UPDATE channels SET last_message_at = $2, updated_at = NOW() WHERE id = $1`,
+				channelID, lastMessageAt,
+			)
+			if err != nil {
+				return err
+			}
+		}
+
+		var inviteExpiresAt *time.Time
+		if req.Invite.ExpiresIn != nil {
+			expires := now.Add(time.Duration(*req.Invite.ExpiresIn) * time.Second)
+			inviteExpiresAt = &expires
+		}
+
+		inviteID := uuid.New()
+		_, err = tx.Exec(ctx,
+			`INSERT INTO community_invites (id, community_id, code, created_by, max_uses, use_count, expires_at, created_at)
+			VALUES ($1, $2, $3, $4, $5, 0, $6, $7)`,
+			inviteID, community.ID, inviteCode, req.OwnerID, req.Invite.MaxUses, inviteExpiresAt, now,
+		)
+		if err != nil {
+			return err
+		}
+
+		details, _ := json.Marshal(map[string]any{
+			"source":      "discord",
+			"channels":    response.ImportedCounts.Channels,
+			"messages":    response.ImportedCounts.Messages,
+			"attachments": response.ImportedCounts.Attachments,
+		})
+		_, err = tx.Exec(ctx,
+			`INSERT INTO audit_logs (id, community_id, actor_id, action, target_type, target_id, details)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+			uuid.New(), community.ID, req.OwnerID, "community.discord_import", "community", community.ID, details,
+		)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	s.broadcast(ctx, community.ID, "COMMUNITY_CREATE", community)
+	return response, nil
+}
+
+var importedUsernameSanitizer = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
+
+func importedAuthorKey(discordID *string, authorName *string) string {
+	if discordID != nil {
+		trimmed := strings.TrimSpace(*discordID)
+		if trimmed != "" {
+			return "discord:" + trimmed
+		}
+	}
+	if authorName != nil {
+		trimmed := strings.TrimSpace(strings.ToLower(*authorName))
+		if trimmed != "" {
+			return "name:" + trimmed
+		}
+	}
+	return ""
+}
+
+func importedAuthorName(authorName *string) string {
+	if authorName == nil {
+		return "discord-user"
+	}
+	trimmed := strings.TrimSpace(*authorName)
+	if trimmed == "" {
+		return "discord-user"
+	}
+	return trimmed
+}
+
+func importedUsernameFromName(name string, suffix string) string {
+	base := importedUsernameSanitizer.ReplaceAllString(name, "")
+	base = strings.TrimSpace(base)
+	if base == "" {
+		base = "discorduser"
+	}
+	if len(base) > 20 {
+		base = base[:20]
+	}
+	return strings.ToLower(base + "_" + suffix)
+}
+
+func ensureImportedAuthorUser(ctx context.Context, tx pgx.Tx, communityID uuid.UUID, authorKey string, authorName string, authorAvatarURL *string) (uuid.UUID, error) {
+	hash := sha1.Sum([]byte(communityID.String() + ":" + authorKey))
+	seed := fmt.Sprintf("%x", hash[:])
+	passwordHashBytes, err := bcrypt.GenerateFromPassword([]byte(seed), bcrypt.MinCost)
+	if err != nil {
+		return uuid.Nil, err
+	}
+
+	suffix := seed[:10]
+	username := importedUsernameFromName(authorName, suffix)
+	email := fmt.Sprintf("discord-import+%s@zentra.import", suffix)
+	userID := uuid.New()
+
+	var ensuredUserID uuid.UUID
+	err = tx.QueryRow(ctx,
+		`INSERT INTO users (id, username, email, password_hash, display_name, avatar_url, status, email_verified, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, 'offline', TRUE, NOW(), NOW())
+		ON CONFLICT (email) DO UPDATE
+		SET display_name = EXCLUDED.display_name,
+			avatar_url = COALESCE(EXCLUDED.avatar_url, users.avatar_url),
+			updated_at = NOW()
+		RETURNING id`,
+		userID, username, email, string(passwordHashBytes), authorName, authorAvatarURL,
+	).Scan(&ensuredUserID)
+	if err == nil {
+		return ensuredUserID, nil
+	}
+
+	// If username collided for a different email, resolve with a fallback username suffix.
+	fallbackUsername := importedUsernameFromName(authorName, seed[10:20])
+	err = tx.QueryRow(ctx,
+		`INSERT INTO users (id, username, email, password_hash, display_name, avatar_url, status, email_verified, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, 'offline', TRUE, NOW(), NOW())
+		ON CONFLICT (email) DO UPDATE
+		SET display_name = EXCLUDED.display_name,
+			avatar_url = COALESCE(EXCLUDED.avatar_url, users.avatar_url),
+			updated_at = NOW()
+		RETURNING id`,
+		uuid.New(), fallbackUsername, email, string(passwordHashBytes), authorName, authorAvatarURL,
+	).Scan(&ensuredUserID)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("failed to ensure imported author user for key %s: %w", authorKey, err)
+	}
+
+	return ensuredUserID, nil
+}
+
+func ensureMessagePartition(ctx context.Context, tx pgx.Tx, createdAt time.Time) error {
+	createdAt = createdAt.UTC()
+	start := time.Date(createdAt.Year(), createdAt.Month(), 1, 0, 0, 0, 0, time.UTC)
+	end := start.AddDate(0, 1, 0)
+	partitionName := fmt.Sprintf("messages_%04d_%02d", start.Year(), int(start.Month()))
+
+	// DDL statements like CREATE TABLE PARTITION OF don't support parameters ($1, $2).
+	// We use the already-formatted/safe partition name and format the range values as literal strings.
+	query := fmt.Sprintf(
+		"CREATE TABLE IF NOT EXISTS %s PARTITION OF messages FOR VALUES FROM ('%s') TO ('%s')",
+		partitionName,
+		start.Format("2006-01-02 15:04:05Z07:00"),
+		end.Format("2006-01-02 15:04:05Z07:00"),
+	)
+
+	_, err := tx.Exec(ctx, query)
+	return err
+}
+
+func normalizeImportedChannelType(importedType string) models.ChannelType {
+	switch strings.ToLower(strings.TrimSpace(importedType)) {
+	case "announcement", "news":
+		return models.ChannelTypeAnnouncement
+	case "gallery", "media":
+		return models.ChannelTypeGallery
+	case "forum":
+		return models.ChannelTypeForum
+	default:
+		return models.ChannelTypeText
+	}
 }
 
 func (s *Service) GetCommunity(ctx context.Context, id uuid.UUID) (*models.Community, error) {

@@ -35,6 +35,7 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to load configuration")
 	}
+	log.Info().Bool("discordImportConfigured", cfg.Discord.ImportToken != "").Msg("Discord import configuration loaded")
 
 	// Initialize logger
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
@@ -74,7 +75,7 @@ func main() {
 	// Initialize services
 	authService := auth.NewService(db, redisClient, cfg.JWT.Secret, cfg.JWT.AccessTTL, cfg.JWT.RefreshTTL)
 	userService := user.NewService(db, redisClient)
-	communityService := community.NewService(db, redisClient)
+	communityService := community.NewService(db, redisClient, encKey)
 	channelService := channel.NewService(db, communityService)
 	messageService := message.NewService(db, redisClient, encKey, channelService)
 	dmService := dm.NewService(db, redisClient, encKey, userService)
@@ -87,7 +88,7 @@ func main() {
 	// Initialize handlers
 	authHandler := auth.NewHandler(authService)
 	userHandler := user.NewHandler(userService)
-	communityHandler := community.NewHandler(communityService)
+	communityHandler := community.NewHandler(communityService, cfg.Discord.ImportToken)
 	channelHandler := channel.NewHandler(channelService)
 	messageHandler := message.NewHandler(messageService)
 	dmHandler := dm.NewHandler(dmService)

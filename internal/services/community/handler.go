@@ -2,10 +2,12 @@ package community
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
 	"github.com/zentra/peridotite/internal/middleware"
 	"github.com/zentra/peridotite/internal/models"
 	"github.com/zentra/peridotite/internal/utils"
@@ -13,11 +15,12 @@ import (
 )
 
 type Handler struct {
-	service *Service
+	service            *Service
+	discordImportToken string
 }
 
-func NewHandler(service *Service) *Handler {
-	return &Handler{service: service}
+func NewHandler(service *Service, discordImportToken string) *Handler {
+	return &Handler{service: service, discordImportToken: discordImportToken}
 }
 
 func (h *Handler) Routes(secret string) chi.Router {
@@ -26,6 +29,8 @@ func (h *Handler) Routes(secret string) chi.Router {
 	// Public routes (for discovery)
 	r.Get("/discover", h.DiscoverCommunities)
 	r.Get("/invite/{code}", h.GetInviteInfo)
+	r.Get("/import/discord/status", h.GetDiscordImportStatus)
+	r.Post("/import/discord", h.ImportDiscordServer)
 
 	// Authenticated routes
 	r.Group(func(r chi.Router) {
@@ -93,6 +98,48 @@ func (h *Handler) CreateCommunity(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.RespondCreated(w, community)
+}
+
+func (h *Handler) ImportDiscordServer(w http.ResponseWriter, r *http.Request) {
+	configuredToken := strings.TrimSpace(h.discordImportToken)
+	if configuredToken == "" {
+		log.Warn().Msg("Discord import attempted while DISCORD_IMPORT_TOKEN is not configured")
+		utils.RespondError(w, http.StatusServiceUnavailable, "Discord import is not configured")
+		return
+	}
+
+	providedToken := strings.TrimSpace(r.Header.Get("X-Discord-Import-Token"))
+	if providedToken != configuredToken {
+		log.Warn().Int("providedTokenLen", len(providedToken)).Int("configuredTokenLen", len(configuredToken)).Msg("Discord import token mismatch")
+		utils.RespondError(w, http.StatusUnauthorized, "Invalid import token")
+		return
+	}
+
+	var req DiscordImportRequest
+	if err := utils.DecodeJSON(r, &req); err != nil {
+		utils.RespondError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if err := utils.Validate(&req); err != nil {
+		utils.RespondValidationError(w, utils.FormatValidationErrors(err))
+		return
+	}
+
+	result, err := h.service.ImportDiscordServer(r.Context(), &req)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to import Discord server")
+		utils.RespondError(w, http.StatusInternalServerError, "Failed to import Discord server: "+err.Error())
+		return
+	}
+
+	utils.RespondCreated(w, result)
+}
+
+func (h *Handler) GetDiscordImportStatus(w http.ResponseWriter, r *http.Request) {
+	utils.RespondSuccess(w, map[string]bool{
+		"configured": strings.TrimSpace(h.discordImportToken) != "",
+	})
 }
 
 func (h *Handler) GetCommunity(w http.ResponseWriter, r *http.Request) {

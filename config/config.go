@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -40,6 +41,9 @@ type Config struct {
 	}
 	Encryption struct {
 		Key string
+	}
+	Discord struct {
+		ImportToken string
 	}
 }
 
@@ -99,6 +103,9 @@ func Load() (*Config, error) {
 
 	// Encryption
 	cfg.Encryption.Key = getEnv("ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+
+	// Discord import integration
+	cfg.Discord.ImportToken = strings.TrimSpace(getEnv("DISCORD_IMPORT_TOKEN", ""))
 
 	AppConfig = cfg
 	return cfg, nil

@@ -184,6 +184,17 @@ These models represent the structure of the JSON objects returned in the `data` 
 - **Path**: `GET /users/me` (Auth required)
 - **Response**: `{"data": { ...Full User... }}`
 
+### Get Current User ID
+- **Path**: `GET /users/me/id` (Auth required)
+- **Response**:
+  ```json
+  {
+    "data": {
+      "id": "uuid"
+    }
+  }
+  ```
+
 ### Update Profile
 - **Path**: `PATCH /users/me` (Auth required)
 - **Request**:
@@ -243,6 +254,77 @@ These models represent the structure of the JSON objects returned in the `data` 
   }
   ```
 - **Response**: `{"data": { ...Community... }}`
+
+### Discord Server Import (Bot Ingest)
+- **Path**: `POST /communities/import/discord` (Bot token required)
+- **Headers**:
+  - `X-Discord-Import-Token: <DISCORD_IMPORT_TOKEN>`
+- **Backend requirement**: `DISCORD_IMPORT_TOKEN` must be set in backend environment and backend must be restarted.
+- **Purpose**: Ingest a Discord-exported payload (channels, messages, files/media metadata) into a new Zentra community and return a join invite.
+- **Request (example)**:
+  ```json
+  {
+    "ownerId": "uuid",
+    "guild": {
+      "name": "My Discord Server",
+      "description": "Imported from Discord",
+      "iconUrl": "https://...",
+      "bannerUrl": "https://...",
+      "isPublic": false,
+      "isOpen": false
+    },
+    "invite": {
+      "maxUses": 100,
+      "expiresIn": 86400
+    },
+    "channels": [
+      {
+        "sourceId": "discord-channel-id",
+        "name": "general",
+        "type": "text",
+        "topic": "server chat",
+        "categoryName": "Text Channels",
+        "categoryPosition": 0,
+        "position": 0,
+        "isNsfw": false,
+        "slowmodeSeconds": 0,
+        "messages": [
+          {
+            "sourceId": "discord-message-id",
+            "authorName": "alice",
+            "content": "hello",
+            "createdAt": "2026-02-12T10:00:00Z",
+            "replyToSourceId": "another-discord-message-id",
+            "attachments": [
+              {
+                "filename": "image.png",
+                "url": "https://cdn.example.com/image.png",
+                "size": 2048,
+                "contentType": "image/png",
+                "thumbnailUrl": "https://cdn.example.com/thumb.png"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+  ```
+- **Response**:
+  ```json
+  {
+    "data": {
+      "community": { "id": "uuid", "name": "My Discord Server" },
+      "inviteCode": "ABCD1234",
+      "inviteUrl": "/api/v1/communities/invite/ABCD1234",
+      "importedCounts": {
+        "channels": 12,
+        "messages": 50231,
+        "attachments": 8291
+      }
+    }
+  }
+  ```
 
 ### Member Management
 - **List Members**: `GET /communities/{id}/members?page=1&pageSize=50` (Auth required)

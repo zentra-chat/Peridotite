@@ -9,9 +9,10 @@ import (
 )
 
 var (
-	validate         *validator.Validate
-	usernameRegex    = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
-	channelNameRegex = regexp.MustCompile(`^[a-z0-9-]+$`)
+	validate                 *validator.Validate
+	usernameRegex            = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+	channelNameRegex         = regexp.MustCompile(`^[a-z0-9-]+$`)
+	invalidChannelCharsRegex = regexp.MustCompile(`[^a-z0-9-]`)
 )
 
 func init() {
@@ -123,7 +124,7 @@ func NormalizeChannelName(name string) string {
 	// Replace spaces with hyphens
 	name = strings.ReplaceAll(name, " ", "-")
 	// Remove invalid characters
-	name = channelNameRegex.ReplaceAllString(name, "")
+	name = invalidChannelCharsRegex.ReplaceAllString(name, "")
 	// Remove consecutive hyphens
 	for strings.Contains(name, "--") {
 		name = strings.ReplaceAll(name, "--", "-")

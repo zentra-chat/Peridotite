@@ -23,6 +23,7 @@ func (h *Handler) Routes() chi.Router {
 
 	// Current user routes
 	r.Get("/me", h.GetCurrentUser)
+	r.Get("/me/id", h.GetCurrentUserID)
 	r.Patch("/me", h.UpdateProfile)
 	r.Delete("/me/avatar", h.RemoveAvatar)
 	r.Get("/me/settings", h.GetSettings)
@@ -56,6 +57,18 @@ func (h *Handler) GetCurrentUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.RespondSuccess(w, user)
+}
+
+func (h *Handler) GetCurrentUserID(w http.ResponseWriter, r *http.Request) {
+	userID, err := middleware.RequireAuth(r.Context())
+	if err != nil {
+		utils.RespondError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	utils.RespondSuccess(w, map[string]string{
+		"id": userID.String(),
+	})
 }
 
 func (h *Handler) RemoveAvatar(w http.ResponseWriter, r *http.Request) {
