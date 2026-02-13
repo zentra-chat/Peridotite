@@ -24,6 +24,7 @@ func (h *Handler) Routes() chi.Router {
 		r.Use(middleware.StrictRateLimitMiddleware(10)) // 10 requests per minute, I need to tune this later
 		r.Post("/register", h.Register)
 		r.Post("/login", h.Login)
+		r.Post("/portable", h.PortableAuth)
 		r.Post("/refresh", h.RefreshToken)
 	})
 
@@ -54,6 +55,13 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.PortableProfile != nil {
+		if err := utils.Validate(req.PortableProfile); err != nil {
+			utils.RespondValidationError(w, utils.FormatValidationErrors(err))
+			return
+		}
+	}
+
 	resp, err := h.service.Register(r.Context(), &req)
 	if err != nil {
 		switch err {
@@ -78,6 +86,13 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	if err := utils.Validate(&req); err != nil {
 		utils.RespondValidationError(w, utils.FormatValidationErrors(err))
 		return
+	}
+
+	if req.PortableProfile != nil {
+		if err := utils.Validate(req.PortableProfile); err != nil {
+			utils.RespondValidationError(w, utils.FormatValidationErrors(err))
+			return
+		}
 	}
 
 	resp, err := h.service.Login(r.Context(), &req)
@@ -110,6 +125,37 @@ func (h *Handler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 			utils.RespondErrorWithCode(w, http.StatusUnauthorized, "INVALID_SESSION", "Session not found or expired")
 		default:
 			utils.RespondError(w, http.StatusInternalServerError, "Failed to refresh token")
+		}
+		return
+	}
+
+	utils.RespondSuccess(w, resp)
+}
+
+func (h *Handler) PortableAuth(w http.ResponseWriter, r *http.Request) {
+	var req PortableAuthRequest
+	if err := utils.DecodeJSON(r, &req); err != nil {
+		utils.RespondError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if err := utils.Validate(&req); err != nil {
+		utils.RespondValidationError(w, utils.FormatValidationErrors(err))
+		return
+	}
+
+	if err := utils.Validate(req.PortableProfile); err != nil {
+		utils.RespondValidationError(w, utils.FormatValidationErrors(err))
+		return
+	}
+
+	resp, err := h.service.PortableAuth(r.Context(), &req)
+	if err != nil {
+		switch err {
+		case ErrPortableProfileReq:
+			utils.RespondErrorWithCode(w, http.StatusBadRequest, "PROFILE_REQUIRED", "Portable profile is required")
+		default:
+			utils.RespondError(w, http.StatusInternalServerError, "Failed to authenticate with portable profile")
 		}
 		return
 	}

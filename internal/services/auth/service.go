@@ -2,7 +2,11 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -20,7 +24,10 @@ var (
 	ErrSessionExpired     = errors.New("session expired")
 	ErrInvalid2FA         = errors.New("invalid 2FA code")
 	ErrUserNotFound       = errors.New("user not found")
+	ErrPortableProfileReq = errors.New("portable profile required")
 )
+
+var portableUsernameRegex = regexp.MustCompile(`[^a-z0-9_]`)
 
 type Service struct {
 	db         *pgxpool.Pool
@@ -41,27 +48,73 @@ func NewService(db *pgxpool.Pool, redis *redis.Client, jwtSecret string, accessT
 }
 
 type RegisterRequest struct {
-	Username string `json:"username" validate:"required,username"`
-	Email    string `json:"email" validate:"required,email"`
-	Password string `json:"password" validate:"required,strongpassword"`
+	Username        string                  `json:"username" validate:"required,username"`
+	Email           string                  `json:"email" validate:"required,email"`
+	Password        string                  `json:"password" validate:"required,strongpassword"`
+	PortableProfile *PortableProfileRequest `json:"portableProfile,omitempty"`
 }
 
 type LoginRequest struct {
-	Login    string `json:"login" validate:"required"` // Username or email
-	Password string `json:"password" validate:"required"`
-	TOTPCode string `json:"totpCode,omitempty"`
+	Login           string                  `json:"login" validate:"required"` // Username or email
+	Password        string                  `json:"password" validate:"required"`
+	TOTPCode        string                  `json:"totpCode,omitempty"`
+	PortableProfile *PortableProfileRequest `json:"portableProfile,omitempty"`
+}
+
+type PortableProfileRequest struct {
+	IdentityID     string  `json:"identityId" validate:"required,max=128"`
+	Username       string  `json:"username" validate:"required,username"`
+	DisplayName    *string `json:"displayName,omitempty" validate:"omitempty,max=64"`
+	AvatarURL      *string `json:"avatarUrl,omitempty" validate:"omitempty,url,max=2000"`
+	Bio            *string `json:"bio,omitempty" validate:"omitempty,max=500"`
+	CustomStatus   *string `json:"customStatus,omitempty" validate:"omitempty,max=128"`
+	ProfileVersion string  `json:"profileVersion" validate:"required,datetime=2006-01-02T15:04:05Z07:00"`
+}
+
+type PortableAuthRequest struct {
+	PortableProfile *PortableProfileRequest `json:"portableProfile" validate:"required"`
+}
+
+type PortableProfileEnvelope struct {
+	IdentityID     string    `json:"identityId"`
+	Username       string    `json:"username"`
+	DisplayName    *string   `json:"displayName,omitempty"`
+	AvatarURL      *string   `json:"avatarUrl,omitempty"`
+	Bio            *string   `json:"bio,omitempty"`
+	CustomStatus   *string   `json:"customStatus,omitempty"`
+	ProfileVersion time.Time `json:"profileVersion"`
+	SyncedAt       time.Time `json:"syncedAt"`
+	Source         string    `json:"source"`
+}
+
+type PortableProfileSync struct {
+	Profile         *PortableProfileEnvelope `json:"profile,omitempty"`
+	ShouldStore     bool                     `json:"shouldStore"`
+	ProfileSource   string                   `json:"profileSource,omitempty"`
+	IdentityMatched bool                     `json:"identityMatched"`
 }
 
 type AuthResponse struct {
-	User         *models.User `json:"user"`
-	AccessToken  string       `json:"accessToken"`
-	RefreshToken string       `json:"refreshToken"`
-	ExpiresAt    time.Time    `json:"expiresAt"`
-	Requires2FA  bool         `json:"requires2FA,omitempty"`
+	User         *models.User         `json:"user"`
+	AccessToken  string               `json:"accessToken"`
+	RefreshToken string               `json:"refreshToken"`
+	ExpiresAt    time.Time            `json:"expiresAt"`
+	Requires2FA  bool                 `json:"requires2FA,omitempty"`
+	ProfileSync  *PortableProfileSync `json:"profileSync,omitempty"`
 }
 
 type RefreshRequest struct {
 	RefreshToken string `json:"refreshToken" validate:"required"`
+}
+
+type portableProfileRecord struct {
+	IdentityID     string
+	ProfileVersion time.Time
+	Username       string
+	DisplayName    *string
+	AvatarURL      *string
+	Bio            *string
+	CustomStatus   *string
 }
 
 func (s *Service) Register(ctx context.Context, req *RegisterRequest) (*AuthResponse, error) {
@@ -124,11 +177,17 @@ func (s *Service) Register(ctx context.Context, req *RegisterRequest) (*AuthResp
 		return nil, err
 	}
 
+	profileSync, err := s.reconcilePortableProfile(ctx, user, req.PortableProfile)
+	if err != nil {
+		return nil, err
+	}
+
 	return &AuthResponse{
 		User:         user,
 		AccessToken:  tokens.AccessToken,
 		RefreshToken: tokens.RefreshToken,
 		ExpiresAt:    tokens.ExpiresAt,
+		ProfileSync:  profileSync,
 	}, nil
 }
 
@@ -190,11 +249,72 @@ func (s *Service) Login(ctx context.Context, req *LoginRequest) (*AuthResponse, 
 
 	user.Status = models.UserStatusOnline
 
+	profileSync, err := s.reconcilePortableProfile(ctx, user, req.PortableProfile)
+	if err != nil {
+		return nil, err
+	}
+
 	return &AuthResponse{
 		User:         user,
 		AccessToken:  tokens.AccessToken,
 		RefreshToken: tokens.RefreshToken,
 		ExpiresAt:    tokens.ExpiresAt,
+		ProfileSync:  profileSync,
+	}, nil
+}
+
+func (s *Service) PortableAuth(ctx context.Context, req *PortableAuthRequest) (*AuthResponse, error) {
+	if req == nil || req.PortableProfile == nil {
+		return nil, ErrPortableProfileReq
+	}
+
+	clientProfile, err := parsePortableProfile(req.PortableProfile)
+	if err != nil {
+		return nil, err
+	}
+
+	user, err := s.findUserByPortableIdentity(ctx, clientProfile.IdentityID)
+	if err != nil {
+		return nil, err
+	}
+
+	if user == nil {
+		user, err = s.createPortableUser(ctx, clientProfile)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	profileSync, err := s.reconcilePortableProfile(ctx, user, req.PortableProfile)
+	if err != nil {
+		return nil, err
+	}
+
+	tokens, err := auth.GenerateTokenPair(user.ID, user.Username, s.jwtSecret, s.accessTTL)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.createSession(ctx, user.ID, tokens.RefreshToken); err != nil {
+		return nil, err
+	}
+
+	_, err = s.db.Exec(ctx,
+		`UPDATE users SET last_seen_at = NOW(), status = 'online' WHERE id = $1`,
+		user.ID,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	user.Status = models.UserStatusOnline
+
+	return &AuthResponse{
+		User:         user,
+		AccessToken:  tokens.AccessToken,
+		RefreshToken: tokens.RefreshToken,
+		ExpiresAt:    tokens.ExpiresAt,
+		ProfileSync:  profileSync,
 	}, nil
 }
 
@@ -205,12 +325,20 @@ func (s *Service) RefreshToken(ctx context.Context, refreshToken string) (*AuthR
 	var session models.UserSession
 	var user models.User
 	err := s.db.QueryRow(ctx,
-		`SELECT s.id, s.user_id, s.expires_at, u.username
+		`SELECT s.id, s.user_id, s.expires_at,
+		u.id, u.username, u.email, u.display_name, u.avatar_url, u.bio,
+		u.status, u.custom_status, u.email_verified, u.two_factor_enabled,
+		u.created_at, u.updated_at, u.last_seen_at
 		FROM user_sessions s
 		JOIN users u ON u.id = s.user_id
 		WHERE s.refresh_token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > NOW()`,
 		tokenHash,
-	).Scan(&session.ID, &session.UserID, &session.ExpiresAt, &user.Username)
+	).Scan(
+		&session.ID, &session.UserID, &session.ExpiresAt,
+		&user.ID, &user.Username, &user.Email, &user.DisplayName, &user.AvatarURL, &user.Bio,
+		&user.Status, &user.CustomStatus, &user.EmailVerified, &user.TwoFactorEnabled,
+		&user.CreatedAt, &user.UpdatedAt, &user.LastSeenAt,
+	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrSessionNotFound
@@ -238,10 +366,17 @@ func (s *Service) RefreshToken(ctx context.Context, refreshToken string) (*AuthR
 		return nil, err
 	}
 
+	profileSync, err := s.reconcilePortableProfile(ctx, &user, nil)
+	if err != nil {
+		return nil, err
+	}
+
 	return &AuthResponse{
+		User:         &user,
 		AccessToken:  tokens.AccessToken,
 		RefreshToken: tokens.RefreshToken,
 		ExpiresAt:    tokens.ExpiresAt,
+		ProfileSync:  profileSync,
 	}, nil
 }
 
@@ -401,4 +536,349 @@ func (s *Service) ChangePassword(ctx context.Context, userID uuid.UUID, currentP
 
 	// Revoke all sessions to force re-login
 	return s.LogoutAll(ctx, userID)
+}
+
+func parsePortableProfile(req *PortableProfileRequest) (*portableProfileRecord, error) {
+	if req == nil {
+		return nil, nil
+	}
+
+	version, err := time.Parse(time.RFC3339, req.ProfileVersion)
+	if err != nil {
+		return nil, fmt.Errorf("invalid profile version: %w", err)
+	}
+
+	return &portableProfileRecord{
+		IdentityID:     strings.TrimSpace(req.IdentityID),
+		ProfileVersion: version,
+		Username:       strings.TrimSpace(req.Username),
+		DisplayName:    req.DisplayName,
+		AvatarURL:      req.AvatarURL,
+		Bio:            req.Bio,
+		CustomStatus:   req.CustomStatus,
+	}, nil
+}
+
+func (s *Service) reconcilePortableProfile(ctx context.Context, user *models.User, clientReq *PortableProfileRequest) (*PortableProfileSync, error) {
+	serverProfile, err := s.getPortableProfileForUser(ctx, user.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	if clientReq == nil {
+		if serverProfile == nil {
+			return nil, nil
+		}
+		return &PortableProfileSync{
+			Profile:         toPortableEnvelope(serverProfile, "instance"),
+			ShouldStore:     true,
+			ProfileSource:   "instance",
+			IdentityMatched: true,
+		}, nil
+	}
+
+	clientProfile, err := parsePortableProfile(clientReq)
+	if err != nil {
+		return nil, err
+	}
+
+	if clientProfile == nil || clientProfile.IdentityID == "" {
+		return nil, ErrPortableProfileReq
+	}
+
+	if serverProfile != nil && serverProfile.IdentityID != "" && serverProfile.IdentityID != clientProfile.IdentityID {
+		return &PortableProfileSync{
+			Profile:         toPortableEnvelope(serverProfile, "instance"),
+			ShouldStore:     true,
+			ProfileSource:   "instance",
+			IdentityMatched: false,
+		}, nil
+	}
+
+	shouldApplyClient := serverProfile == nil || clientProfile.ProfileVersion.After(serverProfile.ProfileVersion)
+	if shouldApplyClient {
+		if err := s.applyPortableProfileToUser(ctx, user.ID, clientProfile); err != nil {
+			return nil, err
+		}
+
+		if user.DisplayName == nil || (clientProfile.DisplayName != nil && *user.DisplayName != *clientProfile.DisplayName) {
+			user.DisplayName = clientProfile.DisplayName
+		}
+		user.AvatarURL = clientProfile.AvatarURL
+		user.Bio = clientProfile.Bio
+		user.CustomStatus = clientProfile.CustomStatus
+
+		if err := s.savePortableProfileForUser(ctx, user.ID, clientProfile); err != nil {
+			return nil, err
+		}
+
+		return &PortableProfileSync{
+			Profile:         toPortableEnvelope(clientProfile, "client"),
+			ShouldStore:     false,
+			ProfileSource:   "client",
+			IdentityMatched: true,
+		}, nil
+	}
+
+	return &PortableProfileSync{
+		Profile:         toPortableEnvelope(serverProfile, "instance"),
+		ShouldStore:     true,
+		ProfileSource:   "instance",
+		IdentityMatched: true,
+	}, nil
+}
+
+func (s *Service) getPortableProfileForUser(ctx context.Context, userID uuid.UUID) (*portableProfileRecord, error) {
+	var raw json.RawMessage
+	err := s.db.QueryRow(ctx,
+		`SELECT settings_json FROM user_settings WHERE user_id = $1`,
+		userID,
+	).Scan(&raw)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	if len(raw) == 0 {
+		return nil, nil
+	}
+
+	var settings map[string]interface{}
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		return nil, nil
+	}
+
+	identity, _ := settings["portableIdentityId"].(string)
+	versionRaw, _ := settings["portableProfileVersion"].(string)
+	if identity == "" || versionRaw == "" {
+		return nil, nil
+	}
+
+	version, err := time.Parse(time.RFC3339, versionRaw)
+	if err != nil {
+		return nil, nil
+	}
+
+	profile := &portableProfileRecord{
+		IdentityID:     identity,
+		ProfileVersion: version,
+	}
+
+	if username, ok := settings["portableUsername"].(string); ok {
+		profile.Username = username
+	}
+	if displayName, ok := settings["portableDisplayName"].(string); ok {
+		profile.DisplayName = &displayName
+	}
+	if avatarURL, ok := settings["portableAvatarUrl"].(string); ok {
+		profile.AvatarURL = &avatarURL
+	}
+	if bio, ok := settings["portableBio"].(string); ok {
+		profile.Bio = &bio
+	}
+	if customStatus, ok := settings["portableCustomStatus"].(string); ok {
+		profile.CustomStatus = &customStatus
+	}
+
+	return profile, nil
+}
+
+func (s *Service) savePortableProfileForUser(ctx context.Context, userID uuid.UUID, profile *portableProfileRecord) error {
+	var raw json.RawMessage
+	err := s.db.QueryRow(ctx,
+		`SELECT settings_json FROM user_settings WHERE user_id = $1`,
+		userID,
+	).Scan(&raw)
+	if err != nil {
+		return err
+	}
+
+	settings := map[string]interface{}{}
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &settings)
+	}
+
+	settings["portableIdentityId"] = profile.IdentityID
+	settings["portableProfileVersion"] = profile.ProfileVersion.UTC().Format(time.RFC3339)
+	settings["portableUsername"] = profile.Username
+	if profile.DisplayName != nil {
+		settings["portableDisplayName"] = *profile.DisplayName
+	} else {
+		delete(settings, "portableDisplayName")
+	}
+	if profile.AvatarURL != nil {
+		settings["portableAvatarUrl"] = *profile.AvatarURL
+	} else {
+		delete(settings, "portableAvatarUrl")
+	}
+	if profile.Bio != nil {
+		settings["portableBio"] = *profile.Bio
+	} else {
+		delete(settings, "portableBio")
+	}
+	if profile.CustomStatus != nil {
+		settings["portableCustomStatus"] = *profile.CustomStatus
+	} else {
+		delete(settings, "portableCustomStatus")
+	}
+
+	marshaled, err := json.Marshal(settings)
+	if err != nil {
+		return err
+	}
+
+	_, err = s.db.Exec(ctx,
+		`UPDATE user_settings SET settings_json = $2::jsonb, updated_at = NOW() WHERE user_id = $1`,
+		userID, marshaled,
+	)
+	return err
+}
+
+func (s *Service) applyPortableProfileToUser(ctx context.Context, userID uuid.UUID, profile *portableProfileRecord) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE users SET display_name = $2, avatar_url = $3, bio = $4, custom_status = $5, updated_at = NOW() WHERE id = $1`,
+		userID, profile.DisplayName, profile.AvatarURL, profile.Bio, profile.CustomStatus,
+	)
+	return err
+}
+
+func toPortableEnvelope(profile *portableProfileRecord, source string) *PortableProfileEnvelope {
+	if profile == nil {
+		return nil
+	}
+
+	return &PortableProfileEnvelope{
+		IdentityID:     profile.IdentityID,
+		Username:       profile.Username,
+		DisplayName:    profile.DisplayName,
+		AvatarURL:      profile.AvatarURL,
+		Bio:            profile.Bio,
+		CustomStatus:   profile.CustomStatus,
+		ProfileVersion: profile.ProfileVersion,
+		SyncedAt:       time.Now().UTC(),
+		Source:         source,
+	}
+}
+
+func (s *Service) findUserByPortableIdentity(ctx context.Context, identityID string) (*models.User, error) {
+	user := &models.User{}
+	err := s.db.QueryRow(ctx,
+		`SELECT u.id, u.username, u.email, u.password_hash, u.display_name, u.avatar_url, u.bio,
+		u.status, u.custom_status, u.email_verified, u.two_factor_enabled, u.two_factor_secret,
+		u.created_at, u.updated_at, u.last_seen_at
+		FROM users u
+		JOIN user_settings us ON us.user_id = u.id
+		WHERE u.deleted_at IS NULL AND us.settings_json->>'portableIdentityId' = $1
+		LIMIT 1`,
+		identityID,
+	).Scan(
+		&user.ID, &user.Username, &user.Email, &user.PasswordHash, &user.DisplayName,
+		&user.AvatarURL, &user.Bio, &user.Status, &user.CustomStatus, &user.EmailVerified,
+		&user.TwoFactorEnabled, &user.TwoFactorSecret, &user.CreatedAt, &user.UpdatedAt, &user.LastSeenAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	return user, nil
+}
+
+func (s *Service) createPortableUser(ctx context.Context, profile *portableProfileRecord) (*models.User, error) {
+	username, err := s.generateUniquePortableUsername(ctx, profile.Username)
+	if err != nil {
+		return nil, err
+	}
+
+	emailLocal := strings.ReplaceAll(strings.ToLower(profile.IdentityID), "-", "")
+	if emailLocal == "" {
+		emailLocal = uuid.NewString()
+	}
+	email := fmt.Sprintf("portable+%s@zentra.local", emailLocal)
+
+	passwordHash, err := auth.HashPassword(uuid.NewString() + ":portable")
+	if err != nil {
+		return nil, err
+	}
+
+	user := &models.User{
+		ID:           uuid.New(),
+		Username:     username,
+		Email:        email,
+		PasswordHash: passwordHash,
+		DisplayName:  profile.DisplayName,
+		AvatarURL:    profile.AvatarURL,
+		Bio:          profile.Bio,
+		CustomStatus: profile.CustomStatus,
+		Status:       models.UserStatusOnline,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+
+	_, err = s.db.Exec(ctx,
+		`INSERT INTO users (id, username, email, password_hash, display_name, avatar_url, bio, status, custom_status, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		user.ID, user.Username, user.Email, user.PasswordHash, user.DisplayName, user.AvatarURL, user.Bio, user.Status, user.CustomStatus, user.CreatedAt, user.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = s.db.Exec(ctx,
+		`INSERT INTO user_settings (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`,
+		user.ID,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.savePortableProfileForUser(ctx, user.ID, profile); err != nil {
+		return nil, err
+	}
+
+	return user, nil
+}
+
+func (s *Service) generateUniquePortableUsername(ctx context.Context, raw string) (string, error) {
+	base := strings.TrimSpace(strings.ToLower(raw))
+	if base == "" {
+		base = "portable_user"
+	}
+	base = portableUsernameRegex.ReplaceAllString(base, "_")
+	base = strings.Trim(base, "_")
+	if len(base) < 3 {
+		base = base + "_acct"
+	}
+	if len(base) > 24 {
+		base = base[:24]
+	}
+
+	candidate := base
+	for i := 0; i < 20; i++ {
+		var exists bool
+		err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE username = $1)`, candidate).Scan(&exists)
+		if err != nil {
+			return "", err
+		}
+		if !exists {
+			return candidate, nil
+		}
+
+		suffix := fmt.Sprintf("_%d", time.Now().UnixNano()%100000)
+		maxBaseLen := 32 - len(suffix)
+		if maxBaseLen < 3 {
+			maxBaseLen = 3
+		}
+		trimmedBase := base
+		if len(trimmedBase) > maxBaseLen {
+			trimmedBase = trimmedBase[:maxBaseLen]
+		}
+		candidate = trimmedBase + suffix
+	}
+
+	return "", errors.New("failed to generate unique portable username")
 }

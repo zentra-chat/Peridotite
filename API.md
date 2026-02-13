@@ -133,7 +133,16 @@ These models represent the structure of the JSON objects returned in the `data` 
   {
     "username": "string",
     "email": "string",
-    "password": "string"
+    "password": "string",
+    "portableProfile": {
+      "identityId": "string",
+      "username": "string",
+      "displayName": "string | null",
+      "avatarUrl": "string | null",
+      "bio": "string | null",
+      "customStatus": "string | null",
+      "profileVersion": "iso-date"
+    }
   }
   ```
 - **Response**: `AuthResponse`
@@ -143,7 +152,13 @@ These models represent the structure of the JSON objects returned in the `data` 
       "user": { ...Full User... },
       "accessToken": "string",
       "refreshToken": "string",
-      "expiresAt": "iso-date"
+      "expiresAt": "iso-date",
+      "profileSync": {
+        "profile": { ...PortableProfile... },
+        "shouldStore": "boolean",
+        "profileSource": "client | instance",
+        "identityMatched": "boolean"
+      }
     }
   }
   ```
@@ -155,7 +170,8 @@ These models represent the structure of the JSON objects returned in the `data` 
   {
     "login": "username_or_email",
     "password": "string",
-    "totpCode": "string" // Optional
+    "totpCode": "string", // Optional
+    "portableProfile": { ...PortableProfile... } // Optional
   }
   ```
 - **Response**: `AuthResponse`
@@ -166,10 +182,29 @@ These models represent the structure of the JSON objects returned in the `data` 
       "accessToken": "string",
       "refreshToken": "string",
       "expiresAt": "iso-date",
-      "requires2FA": "boolean"
+      "requires2FA": "boolean",
+      "profileSync": { ...PortableProfileSync... }
     }
   }
   ```
+
+### Portable Auth
+- **Path**: `POST /auth/portable`
+- **Request**:
+  ```json
+  {
+    "portableProfile": {
+      "identityId": "string",
+      "username": "string",
+      "displayName": "string | null",
+      "avatarUrl": "string | null",
+      "bio": "string | null",
+      "customStatus": "string | null",
+      "profileVersion": "iso-date"
+    }
+  }
+  ```
+- **Response**: `AuthResponse`
 
 ### Refresh Token
 - **Path**: `POST /auth/refresh`
