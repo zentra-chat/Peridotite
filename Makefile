@@ -1,4 +1,4 @@
-.PHONY: all build run test clean docker-up docker-down migrate help
+.PHONY: all build run test clean docker-up docker-down migrate help instance-up instance-down instance-logs deploy-instance
 
 # Variables
 BINARY_NAME=gateway
@@ -79,6 +79,30 @@ docker-down:
 ## docker-logs: View Docker logs
 docker-logs:
 	docker-compose logs -f
+
+## instance-up: Start a named isolated instance stack (INSTANCE=name)
+instance-up:
+	@if [ -z "$(INSTANCE)" ]; then echo "Usage: make instance-up INSTANCE=test2"; exit 1; fi
+	@chmod +x scripts/instance-local.sh
+	@./scripts/instance-local.sh up --name $(INSTANCE)
+
+## instance-down: Stop a named isolated instance stack (INSTANCE=name)
+instance-down:
+	@if [ -z "$(INSTANCE)" ]; then echo "Usage: make instance-down INSTANCE=test2"; exit 1; fi
+	@chmod +x scripts/instance-local.sh
+	@./scripts/instance-local.sh down --name $(INSTANCE)
+
+## instance-logs: Stream API logs from a named isolated instance stack (INSTANCE=name)
+instance-logs:
+	@if [ -z "$(INSTANCE)" ]; then echo "Usage: make instance-logs INSTANCE=test2"; exit 1; fi
+	@chmod +x scripts/instance-local.sh
+	@./scripts/instance-local.sh logs --name $(INSTANCE)
+
+## deploy-instance: Deploy a named instance on current machine (INSTANCE=name)
+deploy-instance:
+	@if [ -z "$(INSTANCE)" ]; then echo "Usage: make deploy-instance INSTANCE=prod-us"; exit 1; fi
+	@chmod +x scripts/deploy-instance.sh
+	@./scripts/deploy-instance.sh --name $(INSTANCE)
 
 ## migrate-up: Run database migrations
 migrate-up:

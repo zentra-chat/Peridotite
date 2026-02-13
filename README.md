@@ -52,6 +52,37 @@ The API will be available at `http://localhost:8080`
 
 For full API details, see [API.md](API.md).
 
+## Run a Second Instance (Local Testing)
+
+To test cross-instance identity behavior, launch a second isolated stack (DB/Redis/MinIO/API) on different ports:
+
+```bash
+chmod +x scripts/instance-local.sh
+scripts/instance-local.sh up --name test2
+```
+
+This prints the second instance API URL (for example `http://localhost:18081`).
+
+## Quick Deploy Script (Any Host)
+
+For fast setup on a VM/server with minimal manual config:
+
+```bash
+chmod +x scripts/deploy-instance.sh
+scripts/deploy-instance.sh --name prod-us --domain https://api.example.com
+```
+
+What it does:
+- Installs Docker automatically on apt-based machines (unless `--skip-docker-install` is passed)
+- Generates secure secrets and per-instance env config
+- Builds and runs an isolated stack using `docker-compose.instance.yml`
+
+If you don’t have a domain yet, you can still run:
+
+```bash
+scripts/deploy-instance.sh --name staging
+```
+
 ### Development
 
 ```bash
@@ -61,13 +92,3 @@ go mod download
 # Run with hot reload (using air)
 air
 ```
-
-## Database Schema
-
-Tables:
-- `users` - User accounts and profiles
-- `communities` - Community/server information
-- `channels` - Text/voice channels
-- `messages` - Partitioned by month for performance
-- `roles` - Permission-based role system
-- `community_members` - Member-community relationships
