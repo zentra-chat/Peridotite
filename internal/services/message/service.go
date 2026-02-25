@@ -14,6 +14,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/zentra/peridotite/internal/models"
 	"github.com/zentra/peridotite/internal/services/messaging"
+	"github.com/zentra/peridotite/internal/services/notification"
 )
 
 var (
@@ -25,16 +26,18 @@ var (
 )
 
 type Service struct {
-	db             *pgxpool.Pool
-	redis          *redis.Client
-	channelService ChannelServiceInterface
-	cipher         messaging.ContentCipher
+	db                  *pgxpool.Pool
+	redis               *redis.Client
+	channelService      ChannelServiceInterface
+	notificationService *notification.Service
+	cipher              messaging.ContentCipher
 }
 
 type ChannelServiceInterface interface {
 	CanAccessChannel(ctx context.Context, channelID, userID uuid.UUID) bool
 	CanSendMessage(ctx context.Context, channelID, userID uuid.UUID) bool
 	CanManageMessages(ctx context.Context, channelID, userID uuid.UUID) bool
+	CanMentionEveryone(ctx context.Context, channelID, userID uuid.UUID) bool
 }
 
 func NewService(db *pgxpool.Pool, redis *redis.Client, encryptionKey []byte, channelService ChannelServiceInterface) *Service {
@@ -44,6 +47,13 @@ func NewService(db *pgxpool.Pool, redis *redis.Client, encryptionKey []byte, cha
 		channelService: channelService,
 		cipher:         messaging.NewChannelCipher(encryptionKey),
 	}
+}
+
+// SetNotificationService wires the notification service into the message service after
+// both have been created (the hub is needed by the notification service, which is
+// initialised after the message service in main).
+func (s *Service) SetNotificationService(ns *notification.Service) {
+	s.notificationService = ns
 }
 
 // Request/Response types
@@ -205,6 +215,25 @@ func (s *Service) CreateMessage(ctx context.Context, channelID, userID uuid.UUID
 
 	// Broadcast to WebSocket clients
 	s.broadcast(ctx, channelID.String(), "MESSAGE_CREATE", resp)
+
+	// Dispatch mention and reply notifications asynchronously.
+	if s.notificationService != nil && req.Content != "" {
+		var replyToAuthorID *uuid.UUID
+		if resp.ReplyTo != nil {
+			replyToAuthorID = &resp.ReplyTo.AuthorID
+		}
+		canMention := s.channelService.CanMentionEveryone(ctx, channelID, userID)
+		mctx := notification.MentionContext{
+			ChannelID:          channelID,
+			MessageID:          messageID,
+			MessageCreatedAt:   now,
+			AuthorID:           userID,
+			Content:            req.Content,
+			ReplyToAuthorID:    replyToAuthorID,
+			CanMentionEveryone: canMention,
+		}
+		go s.notificationService.ProcessMessageMentions(mctx)
+	}
 
 	return resp, nil
 }

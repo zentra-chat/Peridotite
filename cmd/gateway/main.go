@@ -23,6 +23,7 @@ import (
 	"github.com/zentra/peridotite/internal/services/dm"
 	"github.com/zentra/peridotite/internal/services/media"
 	"github.com/zentra/peridotite/internal/services/message"
+	"github.com/zentra/peridotite/internal/services/notification"
 	"github.com/zentra/peridotite/internal/services/user"
 	"github.com/zentra/peridotite/internal/services/websocket"
 	"github.com/zentra/peridotite/pkg/database"
@@ -85,6 +86,11 @@ func main() {
 	wsHub := websocket.NewHub(redisClient, channelService, userService, dmService)
 	go wsHub.Run(context.Background())
 
+	// Initialize notification service (depends on wsHub)
+	notificationService := notification.NewService(db, wsHub)
+	messageService.SetNotificationService(notificationService)
+	dmService.SetNotificationService(notificationService)
+
 	// Initialize handlers
 	authHandler := auth.NewHandler(authService)
 	userHandler := user.NewHandler(userService)
@@ -94,6 +100,7 @@ func main() {
 	dmHandler := dm.NewHandler(dmService)
 	mediaHandler := media.NewHandler(mediaService)
 	wsHandler := websocket.NewHandler(wsHub, cfg.JWT.Secret)
+	notificationHandler := notification.NewHandler(notificationService)
 
 	// Create router
 	r := chi.NewRouter()
@@ -145,6 +152,7 @@ func main() {
 			r.Mount("/messages", messageHandler.Routes())
 			r.Mount("/dms", dmHandler.Routes())
 			r.Mount("/media", mediaHandler.Routes())
+			r.Mount("/notifications", notificationHandler.Routes())
 		})
 	})
 

@@ -42,6 +42,8 @@ const (
 	EventTypeReady            = "READY"
 	EventTypeHeartbeat        = "HEARTBEAT"
 	EventTypeHeartbeatAck     = "HEARTBEAT_ACK"
+	EventTypeNotification     = "NOTIFICATION"
+	EventTypeNotificationRead = "NOTIFICATION_READ"
 )
 
 // Client represents a WebSocket client connection
@@ -292,6 +294,11 @@ func (h *Hub) SendToUser(userID uuid.UUID, event *Event) {
 		default:
 		}
 	}
+}
+
+// SendUserEvent wraps SendToUser for callers that don't import the ws package.
+func (h *Hub) SendUserEvent(userID uuid.UUID, eventType string, data any) {
+	h.SendToUser(userID, &Event{Type: eventType, Data: data})
 }
 
 // SendToClient sends an event to a specific client

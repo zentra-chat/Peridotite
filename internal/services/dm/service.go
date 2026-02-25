@@ -14,6 +14,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/zentra/peridotite/internal/models"
 	"github.com/zentra/peridotite/internal/services/messaging"
+	"github.com/zentra/peridotite/internal/services/notification"
 )
 
 var (
@@ -27,10 +28,11 @@ var (
 )
 
 type Service struct {
-	db          *pgxpool.Pool
-	redis       *redis.Client
-	userService UserServiceInterface
-	cipher      messaging.ContentCipher
+	db                  *pgxpool.Pool
+	redis               *redis.Client
+	userService         UserServiceInterface
+	notificationService *notification.Service
+	cipher              messaging.ContentCipher
 }
 
 type UserServiceInterface interface {
@@ -45,6 +47,12 @@ func NewService(db *pgxpool.Pool, redis *redis.Client, encryptionKey []byte, use
 		userService: userService,
 		cipher:      messaging.NewDMCipher(encryptionKey),
 	}
+}
+
+// SetNotificationService wires the notification service after construction
+// (both services depend on the wsHub which is created after them).
+func (s *Service) SetNotificationService(ns *notification.Service) {
+	s.notificationService = ns
 }
 
 type CreateConversationRequest struct {
@@ -460,6 +468,25 @@ func (s *Service) SendMessage(ctx context.Context, conversationID, userID uuid.U
 	}
 
 	s.broadcast(ctx, conversationID.String(), "DM_MESSAGE_CREATE", resp)
+
+	// Dispatch DM notification to other participants.
+	if s.notificationService != nil {
+		senderName := ""
+		if resp.Sender != nil {
+			if resp.Sender.DisplayName != nil && *resp.Sender.DisplayName != "" {
+				senderName = *resp.Sender.DisplayName
+			} else {
+				senderName = resp.Sender.Username
+			}
+		}
+		go s.notificationService.ProcessDMNotification(notification.DMNotificationContext{
+			ConversationID: conversationID,
+			MessageID:      messageID,
+			SenderID:       userID,
+			SenderName:     senderName,
+			Content:        req.Content,
+		})
+	}
 
 	return resp, nil
 }
