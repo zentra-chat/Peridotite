@@ -83,6 +83,32 @@ If you don’t have a domain yet, you can still run:
 scripts/deploy-instance.sh --name staging
 ```
 
+### Instance Management Commands
+
+The same script can manage an existing deployed instance:
+
+```bash
+# rebuild and relaunch only API
+scripts/deploy-instance.sh rebuild-api --name prod-us
+
+# relaunch API without rebuilding image
+scripts/deploy-instance.sh relaunch-api --name prod-us
+
+# wipe Postgres data and start fresh
+scripts/deploy-instance.sh wipe-db --name prod-us
+
+# pull latest backend changes and restart full stack
+scripts/deploy-instance.sh update-restart --name prod-us
+
+# stop the current instance stack
+scripts/deploy-instance.sh down --name prod-us
+```
+
+Notes:
+- `deploy` remains the default action if none is specified.
+- Existing `.deploy/<instance>.env` is reused by default so secrets stay stable.
+- Use `--force-regenerate-env` with `deploy` only when you intentionally want new secrets/config.
+
 ### Development
 
 ```bash
