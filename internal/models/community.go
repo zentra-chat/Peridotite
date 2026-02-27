@@ -85,11 +85,12 @@ const (
 	PermissionVoiceSpeak        int64 = 1 << 17
 	PermissionVoiceMuteOthers   int64 = 1 << 18
 	PermissionVoiceDeafenOthers int64 = 1 << 19
+	PermissionManageEmojis      int64 = 1 << 20
 
 	// Combined permission sets
 	PermissionAllText  int64 = PermissionViewChannels | PermissionSendMessages | PermissionAddReactions | PermissionAttachFiles | PermissionCreateInvites
 	PermissionAllVoice int64 = PermissionVoiceConnect | PermissionVoiceSpeak
-	PermissionAllAdmin int64 = PermissionAdministrator | PermissionManageCommunity | PermissionManageChannels | PermissionManageRoles | PermissionManageMessages
+	PermissionAllAdmin int64 = PermissionAdministrator | PermissionManageCommunity | PermissionManageChannels | PermissionManageRoles | PermissionManageMessages | PermissionManageEmojis
 )
 
 func HasPermission(userPermissions, required int64) bool {
