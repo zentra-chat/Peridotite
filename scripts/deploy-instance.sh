@@ -32,7 +32,6 @@ Options:
   --domain <url>                    Public API base URL (e.g. https://api.example.com)
   --cors-origins <csv>              CORS origins list
   --discord-import-token <token>    Optional Discord import token
-  --skip-docker-install             Skip docker installation checks
   --force-regenerate-env            Recreate env file (new secrets)
 
 Example:
@@ -49,24 +48,6 @@ require_cmd() {
     echo "Missing required command: $1" >&2
     exit 1
   }
-}
-
-install_docker_if_missing() {
-  if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
-    return
-  fi
-
-  echo "Docker / Docker Compose not found. Attempting automatic install..."
-  if command -v apt-get >/dev/null 2>&1; then
-    sudo apt-get update
-    sudo apt-get install -y ca-certificates curl gnupg lsb-release
-    curl -fsSL https://get.docker.com | sh
-    sudo usermod -aG docker "${USER}" || true
-  else
-    echo "Automatic Docker install is only scripted for apt-based systems." >&2
-    echo "Install Docker manually, then rerun this script." >&2
-    exit 1
-  fi
 }
 
 project_name_for() {
@@ -264,7 +245,6 @@ MINIO_CONSOLE_PORT="9001"
 DOMAIN=""
 CORS_ALLOWED_ORIGINS="*"
 DISCORD_IMPORT_TOKEN=""
-SKIP_DOCKER_INSTALL="false"
 FORCE_REGENERATE_ENV="false"
 
 if [[ $# -gt 0 && "${1}" != --* ]]; then
@@ -314,10 +294,6 @@ while [[ $# -gt 0 ]]; do
       DISCORD_IMPORT_TOKEN="$2"
       shift 2
       ;;
-    --skip-docker-install)
-      SKIP_DOCKER_INSTALL="true"
-      shift 1
-      ;;
     --force-regenerate-env)
       FORCE_REGENERATE_ENV="true"
       shift 1
@@ -334,10 +310,6 @@ if [[ -z "${INSTANCE_NAME}" ]]; then
   echo "--name is required" >&2
   usage
   exit 1
-fi
-
-if [[ "${SKIP_DOCKER_INSTALL}" != "true" ]]; then
-  install_docker_if_missing
 fi
 
 require_cmd docker

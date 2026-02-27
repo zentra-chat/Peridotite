@@ -73,7 +73,6 @@ scripts/deploy-instance.sh --name prod-us --domain https://api.example.com
 ```
 
 What it does:
-- Installs Docker automatically on apt-based machines (unless `--skip-docker-install` is passed)
 - Generates secure secrets and per-instance env config
 - Builds and runs an isolated stack using `docker-compose.instance.yml`
 
