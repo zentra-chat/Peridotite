@@ -14,6 +14,7 @@ import (
 	"github.com/zentra/peridotite/internal/services/channel"
 	"github.com/zentra/peridotite/internal/services/dm"
 	"github.com/zentra/peridotite/internal/services/user"
+	"github.com/zentra/peridotite/internal/services/voice"
 )
 
 // Event types
@@ -32,6 +33,9 @@ const (
 	EventTypeReactionAdd      = "REACTION_ADD"
 	EventTypeReactionRemove   = "REACTION_REMOVE"
 	EventTypeVoiceState       = "VOICE_STATE_UPDATE"
+	EventTypeVoiceJoin        = "VOICE_JOIN"
+	EventTypeVoiceLeave       = "VOICE_LEAVE"
+	EventTypeVoiceSignal      = "VOICE_SIGNAL"
 	EventTypeCommunityUpdate  = "COMMUNITY_UPDATE"
 	EventTypeUserUpdate       = "USER_UPDATE"
 	EventTypeDMMessage        = "DM_MESSAGE_CREATE"
@@ -70,6 +74,7 @@ type Hub struct {
 	channelService *channel.Service
 	userService    *user.Service
 	dmService      *dm.Service
+	voiceService   *voice.Service
 	mu             sync.RWMutex
 }
 
@@ -92,7 +97,7 @@ type ClientMessage struct {
 	Data json.RawMessage `json:"data"`
 }
 
-func NewHub(redisClient *redis.Client, channelService *channel.Service, userService *user.Service, dmService *dm.Service) *Hub {
+func NewHub(redisClient *redis.Client, channelService *channel.Service, userService *user.Service, dmService *dm.Service, voiceService *voice.Service) *Hub {
 	return &Hub{
 		clients:        make(map[uuid.UUID]*Client),
 		userClients:    make(map[uuid.UUID][]*Client),
@@ -104,6 +109,7 @@ func NewHub(redisClient *redis.Client, channelService *channel.Service, userServ
 		channelService: channelService,
 		userService:    userService,
 		dmService:      dmService,
+		voiceService:   voiceService,
 	}
 }
 
@@ -158,10 +164,27 @@ func (h *Hub) unregisterClient(client *Client) {
 			}
 		}
 
-		// If no more connections for this user, set offline
+		// If no more connections for this user, set offline and disconnect voice
 		if len(h.userClients[client.UserID]) == 0 {
 			delete(h.userClients, client.UserID)
 			h.setUserPresence(context.Background(), client.UserID, "offline")
+
+			// Disconnect from voice channels
+			if h.voiceService != nil {
+				channelIDs, _ := h.voiceService.DisconnectUser(context.Background(), client.UserID)
+				for _, channelID := range channelIDs {
+					h.broadcastToChannel(&BroadcastMessage{
+						ChannelID: channelID.String(),
+						Event: &Event{
+							Type: EventTypeVoiceLeave,
+							Data: map[string]interface{}{
+								"channelId": channelID.String(),
+								"userId":    client.UserID.String(),
+							},
+						},
+					})
+				}
+			}
 		}
 
 		// Remove from channel subscriptions

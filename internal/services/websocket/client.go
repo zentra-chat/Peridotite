@@ -133,6 +133,14 @@ func (c *Client) handleMessage(message []byte) {
 		c.handleHeartbeat()
 	case "PRESENCE_UPDATE":
 		c.handlePresenceUpdate(msg.Data)
+	case "VOICE_JOIN":
+		c.handleVoiceJoin(msg.Data)
+	case "VOICE_LEAVE":
+		c.handleVoiceLeave(msg.Data)
+	case "VOICE_STATE_UPDATE":
+		c.handleVoiceStateUpdate(msg.Data)
+	case "VOICE_SIGNAL":
+		c.handleVoiceSignal(msg.Data)
 	default:
 		log.Warn().
 			Str("type", msg.Type).
@@ -254,4 +262,171 @@ func (c *Client) SendEvent(event *Event) {
 	case c.Send <- data:
 	default:
 	}
+}
+
+// handleVoiceJoin handles a user joining a voice channel
+func (c *Client) handleVoiceJoin(data json.RawMessage) {
+	var req struct {
+		ChannelID string `json:"channelId"`
+	}
+	if err := json.Unmarshal(data, &req); err != nil {
+		return
+	}
+
+	channelID, err := uuid.Parse(req.ChannelID)
+	if err != nil {
+		return
+	}
+
+	if c.Hub.voiceService == nil {
+		return
+	}
+
+	state, err := c.Hub.voiceService.JoinChannel(context.Background(), channelID, c.UserID)
+	if err != nil {
+		log.Error().Err(err).
+			Str("channelId", req.ChannelID).
+			Str("userId", c.UserID.String()).
+			Msg("Failed to join voice channel")
+		c.SendEvent(&Event{
+			Type: "VOICE_ERROR",
+			Data: map[string]interface{}{
+				"error": err.Error(),
+			},
+		})
+		return
+	}
+
+	// Get user info
+	u, _ := c.Hub.userService.GetUserByID(context.Background(), c.UserID)
+
+	// Subscribe to the voice channel for signaling
+	c.Hub.Subscribe(c, req.ChannelID)
+
+	// Get current participants for the joining user
+	states, _ := c.Hub.voiceService.GetChannelVoiceStates(context.Background(), channelID)
+
+	// Send current state to the joining user
+	c.SendEvent(&Event{
+		Type: EventTypeVoiceJoin,
+		Data: map[string]interface{}{
+			"channelId":    req.ChannelID,
+			"userId":       c.UserID.String(),
+			"state":        state,
+			"user":         u,
+			"participants": states,
+		},
+	})
+
+	// Broadcast to others in the channel
+	c.Hub.Broadcast(req.ChannelID, &Event{
+		Type: EventTypeVoiceJoin,
+		Data: map[string]interface{}{
+			"channelId": req.ChannelID,
+			"userId":    c.UserID.String(),
+			"state":     state,
+			"user":      u,
+		},
+	}, &c.ID)
+}
+
+// handleVoiceLeave handles a user leaving a voice channel
+func (c *Client) handleVoiceLeave(data json.RawMessage) {
+	var req struct {
+		ChannelID string `json:"channelId"`
+	}
+	if err := json.Unmarshal(data, &req); err != nil {
+		return
+	}
+
+	channelID, err := uuid.Parse(req.ChannelID)
+	if err != nil {
+		return
+	}
+
+	if c.Hub.voiceService == nil {
+		return
+	}
+
+	if err := c.Hub.voiceService.LeaveChannel(context.Background(), channelID, c.UserID); err != nil {
+		return
+	}
+
+	// Broadcast leave to others
+	c.Hub.Broadcast(req.ChannelID, &Event{
+		Type: EventTypeVoiceLeave,
+		Data: map[string]interface{}{
+			"channelId": req.ChannelID,
+			"userId":    c.UserID.String(),
+		},
+	}, &c.ID)
+
+	// Unsubscribe from voice channel
+	c.Hub.Unsubscribe(c, req.ChannelID)
+}
+
+// handleVoiceStateUpdate handles mute/deafen state updates
+func (c *Client) handleVoiceStateUpdate(data json.RawMessage) {
+	var req struct {
+		ChannelID      string `json:"channelId"`
+		IsSelfMuted    *bool  `json:"isSelfMuted"`
+		IsSelfDeafened *bool  `json:"isSelfDeafened"`
+	}
+	if err := json.Unmarshal(data, &req); err != nil {
+		return
+	}
+
+	channelID, err := uuid.Parse(req.ChannelID)
+	if err != nil {
+		return
+	}
+
+	if c.Hub.voiceService == nil {
+		return
+	}
+
+	state, err := c.Hub.voiceService.UpdateVoiceState(context.Background(), channelID, c.UserID, req.IsSelfMuted, req.IsSelfDeafened)
+	if err != nil {
+		return
+	}
+
+	// Broadcast state update
+	c.Hub.Broadcast(req.ChannelID, &Event{
+		Type: EventTypeVoiceState,
+		Data: map[string]interface{}{
+			"channelId": req.ChannelID,
+			"userId":    c.UserID.String(),
+			"state":     state,
+		},
+	}, nil)
+}
+
+// handleVoiceSignal handles WebRTC signaling (offer/answer/ICE candidates)
+func (c *Client) handleVoiceSignal(data json.RawMessage) {
+	var req struct {
+		ChannelID  string          `json:"channelId"`
+		TargetUID  string          `json:"targetUserId"`
+		SignalType string          `json:"signalType"` // "offer", "answer", "ice-candidate"
+		Signal     json.RawMessage `json:"signal"`
+	}
+	if err := json.Unmarshal(data, &req); err != nil {
+		return
+	}
+
+	targetUserID, err := uuid.Parse(req.TargetUID)
+	if err != nil {
+		return
+	}
+
+	// Forward signal to target user
+	c.Hub.SendToUser(targetUserID, &Event{
+		Type: EventTypeVoiceSignal,
+		Data: map[string]interface{}{
+			"channelId":    req.ChannelID,
+			"fromUserId":   c.UserID.String(),
+			"targetUserId": req.TargetUID,
+			"signalType":   req.SignalType,
+			"signal":       req.Signal,
+		},
+	})
 }

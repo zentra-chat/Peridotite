@@ -25,6 +25,7 @@ import (
 	"github.com/zentra/peridotite/internal/services/message"
 	"github.com/zentra/peridotite/internal/services/notification"
 	"github.com/zentra/peridotite/internal/services/user"
+	"github.com/zentra/peridotite/internal/services/voice"
 	"github.com/zentra/peridotite/internal/services/websocket"
 	"github.com/zentra/peridotite/pkg/database"
 	"github.com/zentra/peridotite/pkg/storage"
@@ -82,8 +83,11 @@ func main() {
 	dmService := dm.NewService(db, redisClient, encKey, userService)
 	mediaService := media.NewService(db, minioClient, [3]string{cfg.Storage.BucketAttachments, cfg.Storage.BucketAvatars, cfg.Storage.BucketCommunity}, cfg.Storage.CDNBaseURL, communityService)
 
+	// Initialize voice service
+	voiceService := voice.NewService(db, channelService, userService)
+
 	// Initialize WebSocket hub
-	wsHub := websocket.NewHub(redisClient, channelService, userService, dmService)
+	wsHub := websocket.NewHub(redisClient, channelService, userService, dmService, voiceService)
 	go wsHub.Run(context.Background())
 
 	// Initialize notification service (depends on wsHub)
@@ -100,6 +104,7 @@ func main() {
 	dmHandler := dm.NewHandler(dmService)
 	mediaHandler := media.NewHandler(mediaService)
 	wsHandler := websocket.NewHandler(wsHub, cfg.JWT.Secret)
+	voiceHandler := voice.NewHandler(voiceService)
 	notificationHandler := notification.NewHandler(notificationService)
 
 	// Create router
@@ -153,6 +158,7 @@ func main() {
 			r.Mount("/dms", dmHandler.Routes())
 			r.Mount("/media", mediaHandler.Routes())
 			r.Mount("/notifications", notificationHandler.Routes())
+			r.Mount("/voice", voiceHandler.Routes())
 		})
 	})
 

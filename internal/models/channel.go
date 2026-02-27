@@ -13,7 +13,26 @@ const (
 	ChannelTypeAnnouncement ChannelType = "announcement"
 	ChannelTypeGallery      ChannelType = "gallery"
 	ChannelTypeForum        ChannelType = "forum"
+	ChannelTypeVoice        ChannelType = "voice"
 )
+
+// VoiceState represents a user's voice connection state in a voice channel
+type VoiceState struct {
+	ID          uuid.UUID `json:"id" db:"id"`
+	ChannelID   uuid.UUID `json:"channelId" db:"channel_id"`
+	UserID      uuid.UUID `json:"userId" db:"user_id"`
+	IsMuted     bool      `json:"isMuted" db:"is_muted"`
+	IsDeafened  bool      `json:"isDeafened" db:"is_deafened"`
+	IsSelfMuted bool      `json:"isSelfMuted" db:"is_self_muted"`
+	IsSelfDeaf  bool      `json:"isSelfDeafened" db:"is_self_deafened"`
+	JoinedAt    time.Time `json:"joinedAt" db:"joined_at"`
+}
+
+// VoiceStateWithUser includes user info for display
+type VoiceStateWithUser struct {
+	VoiceState
+	User *User `json:"user,omitempty"`
+}
 
 type ChannelCategory struct {
 	ID          uuid.UUID `json:"id" db:"id"`

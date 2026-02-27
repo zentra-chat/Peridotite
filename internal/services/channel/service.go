@@ -34,7 +34,7 @@ func NewService(db *pgxpool.Pool, communityService *community.Service) *Service 
 type CreateChannelRequest struct {
 	Name            string     `json:"name" validate:"required,channelname"`
 	Topic           *string    `json:"topic" validate:"omitempty,max=1024"`
-	Type            string     `json:"type" validate:"required,oneof=text announcement gallery forum"`
+	Type            string     `json:"type" validate:"required,oneof=text announcement gallery forum voice"`
 	CategoryID      *uuid.UUID `json:"categoryId"`
 	IsNSFW          bool       `json:"isNsfw"`
 	SlowmodeSeconds int        `json:"slowmodeSeconds" validate:"min=0,max=21600"`

@@ -65,25 +65,30 @@ type MemberRoleAssignment struct {
 
 // Permission flags (bitfield)
 const (
-	PermissionViewChannels    int64 = 1 << 0
-	PermissionSendMessages    int64 = 1 << 1
-	PermissionManageMessages  int64 = 1 << 2
-	PermissionManageChannels  int64 = 1 << 3
-	PermissionManageCommunity int64 = 1 << 4
-	PermissionManageRoles     int64 = 1 << 5
-	PermissionKickMembers     int64 = 1 << 6
-	PermissionBanMembers      int64 = 1 << 7
-	PermissionCreateInvites   int64 = 1 << 8
-	PermissionAttachFiles     int64 = 1 << 9
-	PermissionAddReactions    int64 = 1 << 10
-	PermissionMentionEveryone int64 = 1 << 11
-	PermissionPinMessages     int64 = 1 << 12
-	PermissionManageWebhooks  int64 = 1 << 13
-	PermissionViewAuditLog    int64 = 1 << 14
-	PermissionAdministrator   int64 = 1 << 15
+	PermissionViewChannels      int64 = 1 << 0
+	PermissionSendMessages      int64 = 1 << 1
+	PermissionManageMessages    int64 = 1 << 2
+	PermissionManageChannels    int64 = 1 << 3
+	PermissionManageCommunity   int64 = 1 << 4
+	PermissionManageRoles       int64 = 1 << 5
+	PermissionKickMembers       int64 = 1 << 6
+	PermissionBanMembers        int64 = 1 << 7
+	PermissionCreateInvites     int64 = 1 << 8
+	PermissionAttachFiles       int64 = 1 << 9
+	PermissionAddReactions      int64 = 1 << 10
+	PermissionMentionEveryone   int64 = 1 << 11
+	PermissionPinMessages       int64 = 1 << 12
+	PermissionManageWebhooks    int64 = 1 << 13
+	PermissionViewAuditLog      int64 = 1 << 14
+	PermissionAdministrator     int64 = 1 << 15
+	PermissionVoiceConnect      int64 = 1 << 16
+	PermissionVoiceSpeak        int64 = 1 << 17
+	PermissionVoiceMuteOthers   int64 = 1 << 18
+	PermissionVoiceDeafenOthers int64 = 1 << 19
 
 	// Combined permission sets
 	PermissionAllText  int64 = PermissionViewChannels | PermissionSendMessages | PermissionAddReactions | PermissionAttachFiles | PermissionCreateInvites
+	PermissionAllVoice int64 = PermissionVoiceConnect | PermissionVoiceSpeak
 	PermissionAllAdmin int64 = PermissionAdministrator | PermissionManageCommunity | PermissionManageChannels | PermissionManageRoles | PermissionManageMessages
 )
 
