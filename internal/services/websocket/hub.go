@@ -148,8 +148,10 @@ func (h *Hub) registerClient(client *Client) {
 }
 
 func (h *Hub) unregisterClient(client *Client) {
+	// Collect voice leave broadcasts to send after releasing the lock
+	var voiceLeaveBroadcasts []*BroadcastMessage
+
 	h.mu.Lock()
-	defer h.mu.Unlock()
 
 	if _, ok := h.clients[client.ID]; ok {
 		delete(h.clients, client.ID)
@@ -173,7 +175,7 @@ func (h *Hub) unregisterClient(client *Client) {
 			if h.voiceService != nil {
 				channelIDs, _ := h.voiceService.DisconnectUser(context.Background(), client.UserID)
 				for _, channelID := range channelIDs {
-					h.broadcastToChannel(&BroadcastMessage{
+					voiceLeaveBroadcasts = append(voiceLeaveBroadcasts, &BroadcastMessage{
 						ChannelID: channelID.String(),
 						Event: &Event{
 							Type: EventTypeVoiceLeave,
@@ -201,6 +203,13 @@ func (h *Hub) unregisterClient(client *Client) {
 			Str("clientId", client.ID.String()).
 			Str("userId", client.UserID.String()).
 			Msg("WebSocket client disconnected")
+	}
+
+	h.mu.Unlock()
+
+	// Send voice leave broadcasts now that the lock is released
+	for _, msg := range voiceLeaveBroadcasts {
+		h.broadcastToChannel(msg)
 	}
 }
 
