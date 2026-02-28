@@ -184,6 +184,25 @@ func (s *Service) CreateCommunity(ctx context.Context, ownerID uuid.UUID, req *C
 			return err
 		}
 
+		// Create administrator role and assign it to owner
+		adminRoleID := uuid.New()
+		_, err = tx.Exec(ctx,
+			`INSERT INTO roles (id, community_id, name, permissions, is_default, position)
+			VALUES ($1, $2, 'Administrator', $3, FALSE, 100)`,
+			adminRoleID, community.ID, models.PermissionAllAdmin,
+		)
+		if err != nil {
+			return err
+		}
+
+		_, err = tx.Exec(ctx,
+			`INSERT INTO member_roles (member_id, role_id) VALUES ($1, $2)`,
+			memberID, adminRoleID,
+		)
+		if err != nil {
+			return err
+		}
+
 		// Create default role
 		_, err = tx.Exec(ctx,
 			`INSERT INTO roles (id, community_id, name, permissions, is_default, position)
@@ -274,6 +293,24 @@ func (s *Service) ImportDiscordServer(ctx context.Context, req *DiscordImportReq
 			`INSERT INTO community_members (id, community_id, user_id, joined_at)
 			VALUES ($1, $2, $3, NOW())`,
 			memberID, community.ID, req.OwnerID,
+		)
+		if err != nil {
+			return err
+		}
+
+		adminRoleID := uuid.New()
+		_, err = tx.Exec(ctx,
+			`INSERT INTO roles (id, community_id, name, permissions, is_default, position)
+			VALUES ($1, $2, 'Administrator', $3, FALSE, 100)`,
+			adminRoleID, community.ID, models.PermissionAllAdmin,
+		)
+		if err != nil {
+			return err
+		}
+
+		_, err = tx.Exec(ctx,
+			`INSERT INTO member_roles (member_id, role_id) VALUES ($1, $2)`,
+			memberID, adminRoleID,
 		)
 		if err != nil {
 			return err
