@@ -19,6 +19,7 @@ import (
 	"github.com/zentra/peridotite/internal/middleware"
 	"github.com/zentra/peridotite/internal/services/auth"
 	"github.com/zentra/peridotite/internal/services/channel"
+	"github.com/zentra/peridotite/internal/services/channeltype"
 	"github.com/zentra/peridotite/internal/services/community"
 	"github.com/zentra/peridotite/internal/services/dm"
 	"github.com/zentra/peridotite/internal/services/emoji"
@@ -79,7 +80,15 @@ func main() {
 	authService := auth.NewService(db, redisClient, cfg.JWT.Secret, cfg.JWT.AccessTTL, cfg.JWT.RefreshTTL)
 	userService := user.NewService(db, redisClient)
 	communityService := community.NewService(db, redisClient, encKey)
-	channelService := channel.NewService(db, communityService)
+
+	// Set up the channel type registry and load definitions from the DB
+	channelTypeRegistry := channeltype.NewRegistry(db)
+	if err := channelTypeRegistry.Load(context.Background()); err != nil {
+		log.Fatal().Err(err).Msg("Failed to load channel type definitions")
+	}
+	log.Info().Int("types", len(channelTypeRegistry.All())).Msg("Channel type registry loaded")
+
+	channelService := channel.NewService(db, communityService, channelTypeRegistry)
 	messageService := message.NewService(db, redisClient, encKey, channelService)
 	dmService := dm.NewService(db, redisClient, encKey, userService)
 	mediaService := media.NewService(db, minioClient, [3]string{cfg.Storage.BucketAttachments, cfg.Storage.BucketAvatars, cfg.Storage.BucketCommunity}, cfg.Storage.CDNBaseURL, communityService)
@@ -102,6 +111,7 @@ func main() {
 	userHandler := user.NewHandler(userService)
 	communityHandler := community.NewHandler(communityService, cfg.Discord.ImportToken)
 	channelHandler := channel.NewHandler(channelService)
+	channelTypeHandler := channeltype.NewHandler(channelTypeRegistry)
 	messageHandler := message.NewHandler(messageService)
 	dmHandler := dm.NewHandler(dmService)
 	mediaHandler := media.NewHandler(mediaService)
@@ -157,6 +167,7 @@ func main() {
 
 			r.Mount("/users", userHandler.Routes())
 			r.Mount("/channels", channelHandler.Routes())
+			r.Mount("/channel-types", channelTypeHandler.Routes())
 			r.Mount("/messages", messageHandler.Routes())
 			r.Mount("/dms", dmHandler.Routes())
 			r.Mount("/media", mediaHandler.Routes())

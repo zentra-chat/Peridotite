@@ -10,41 +10,61 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/zentra/peridotite/internal/models"
+	"github.com/zentra/peridotite/internal/services/channeltype"
 	"github.com/zentra/peridotite/internal/services/community"
 	"github.com/zentra/peridotite/pkg/database"
 )
 
 var (
-	ErrChannelNotFound   = errors.New("channel not found")
-	ErrCategoryNotFound  = errors.New("category not found")
-	ErrInsufficientPerms = errors.New("insufficient permissions")
+	ErrChannelNotFound    = errors.New("channel not found")
+	ErrCategoryNotFound   = errors.New("category not found")
+	ErrInsufficientPerms  = errors.New("insufficient permissions")
+	ErrInvalidChannelType = errors.New("invalid channel type")
 )
 
 type Service struct {
 	db               *pgxpool.Pool
 	communityService *community.Service
+	typeRegistry     *channeltype.Registry
 }
 
-func NewService(db *pgxpool.Pool, communityService *community.Service) *Service {
+func NewService(db *pgxpool.Pool, communityService *community.Service, typeRegistry *channeltype.Registry) *Service {
 	return &Service{
 		db:               db,
 		communityService: communityService,
+		typeRegistry:     typeRegistry,
 	}
 }
 
 type CreateChannelRequest struct {
-	Name            string     `json:"name" validate:"required,channelname"`
-	Topic           *string    `json:"topic" validate:"omitempty,max=1024"`
-	Type            string     `json:"type" validate:"required,oneof=text announcement gallery forum voice"`
-	CategoryID      *uuid.UUID `json:"categoryId"`
-	IsNSFW          bool       `json:"isNsfw"`
-	SlowmodeSeconds int        `json:"slowmodeSeconds" validate:"min=0,max=21600"`
+	Name            string          `json:"name" validate:"required,channelname"`
+	Topic           *string         `json:"topic" validate:"omitempty,max=1024"`
+	Type            string          `json:"type" validate:"required,min=1,max=64"`
+	CategoryID      *uuid.UUID      `json:"categoryId"`
+	IsNSFW          bool            `json:"isNsfw"`
+	SlowmodeSeconds int             `json:"slowmodeSeconds" validate:"min=0,max=21600"`
+	Metadata        json.RawMessage `json:"metadata"`
 }
 
 func (s *Service) CreateChannel(ctx context.Context, communityID, userID uuid.UUID, req *CreateChannelRequest) (*models.Channel, error) {
 	// Check permissions
 	if err := s.requireChannelPermission(ctx, communityID, userID, models.PermissionManageChannels); err != nil {
 		return nil, err
+	}
+
+	// Validate that the requested type actually exists in the registry
+	typeDef, err := s.typeRegistry.Get(req.Type)
+	if err != nil {
+		return nil, ErrInvalidChannelType
+	}
+
+	// Use the type's default metadata if none was provided
+	metadata := req.Metadata
+	if metadata == nil || string(metadata) == "" || string(metadata) == "null" {
+		metadata = typeDef.DefaultMetadata
+	}
+	if metadata == nil {
+		metadata = json.RawMessage("{}")
 	}
 
 	// Get max position
@@ -64,15 +84,17 @@ func (s *Service) CreateChannel(ctx context.Context, communityID, userID uuid.UU
 		Position:        maxPos + 1,
 		IsNSFW:          req.IsNSFW,
 		SlowmodeSeconds: req.SlowmodeSeconds,
+		Metadata:        metadata,
 		CreatedAt:       time.Now(),
 		UpdatedAt:       time.Now(),
 	}
 
-	_, err := s.db.Exec(ctx,
-		`INSERT INTO channels (id, community_id, category_id, name, topic, type, position, is_nsfw, slowmode_seconds, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+	_, err = s.db.Exec(ctx,
+		`INSERT INTO channels (id, community_id, category_id, name, topic, type, position, is_nsfw, slowmode_seconds, metadata, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 		channel.ID, channel.CommunityID, channel.CategoryID, channel.Name, channel.Topic,
-		channel.Type, channel.Position, channel.IsNSFW, channel.SlowmodeSeconds, channel.CreatedAt, channel.UpdatedAt,
+		channel.Type, channel.Position, channel.IsNSFW, channel.SlowmodeSeconds, channel.Metadata,
+		channel.CreatedAt, channel.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -87,12 +109,13 @@ func (s *Service) CreateChannel(ctx context.Context, communityID, userID uuid.UU
 func (s *Service) GetChannel(ctx context.Context, id uuid.UUID) (*models.Channel, error) {
 	channel := &models.Channel{}
 	err := s.db.QueryRow(ctx,
-		`SELECT id, community_id, category_id, name, topic, type, position, is_nsfw, slowmode_seconds, created_at, updated_at
+		`SELECT id, community_id, category_id, name, topic, type, position, is_nsfw, slowmode_seconds, metadata, created_at, updated_at
 		FROM channels WHERE id = $1`,
 		id,
 	).Scan(
 		&channel.ID, &channel.CommunityID, &channel.CategoryID, &channel.Name, &channel.Topic,
-		&channel.Type, &channel.Position, &channel.IsNSFW, &channel.SlowmodeSeconds, &channel.CreatedAt, &channel.UpdatedAt,
+		&channel.Type, &channel.Position, &channel.IsNSFW, &channel.SlowmodeSeconds, &channel.Metadata,
+		&channel.CreatedAt, &channel.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -106,7 +129,7 @@ func (s *Service) GetChannel(ctx context.Context, id uuid.UUID) (*models.Channel
 func (s *Service) GetCommunityChannels(ctx context.Context, communityID uuid.UUID) ([]*models.ChannelWithCategory, error) {
 	rows, err := s.db.Query(ctx,
 		`SELECT c.id, c.community_id, c.category_id, c.name, c.topic, c.type, c.position, 
-		c.is_nsfw, c.slowmode_seconds, c.created_at, c.updated_at, cat.name as category_name
+		c.is_nsfw, c.slowmode_seconds, c.metadata, c.created_at, c.updated_at, cat.name as category_name
 		FROM channels c
 		LEFT JOIN channel_categories cat ON cat.id = c.category_id
 		WHERE c.community_id = $1
@@ -123,7 +146,7 @@ func (s *Service) GetCommunityChannels(ctx context.Context, communityID uuid.UUI
 		c := &models.ChannelWithCategory{}
 		err := rows.Scan(
 			&c.ID, &c.CommunityID, &c.CategoryID, &c.Name, &c.Topic, &c.Type,
-			&c.Position, &c.IsNSFW, &c.SlowmodeSeconds, &c.CreatedAt, &c.UpdatedAt, &c.CategoryName,
+			&c.Position, &c.IsNSFW, &c.SlowmodeSeconds, &c.Metadata, &c.CreatedAt, &c.UpdatedAt, &c.CategoryName,
 		)
 		if err != nil {
 			return nil, err

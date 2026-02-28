@@ -1,6 +1,7 @@
 package models
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -8,6 +9,7 @@ import (
 
 type ChannelType string
 
+// Built-in channel types. Plugins can add more at runtime.
 const (
 	ChannelTypeText         ChannelType = "text"
 	ChannelTypeAnnouncement ChannelType = "announcement"
@@ -15,6 +17,39 @@ const (
 	ChannelTypeForum        ChannelType = "forum"
 	ChannelTypeVoice        ChannelType = "voice"
 )
+
+// Capability flags for channel types - determines what features a channel supports
+const (
+	CapMessages  int64 = 1 << iota // 1 - basic text messaging
+	CapThreads                     // 2 - threaded replies
+	CapMedia                       // 4 - media-first content
+	CapVoice                       // 8 - real-time voice
+	CapVideo                       // 16 - real-time video
+	CapEmbeds                      // 32 - rich embeds and link previews
+	CapPins                        // 64 - message pinning
+	CapReactions                   // 128 - emoji reactions
+	CapSlowmode                    // 256 - rate limiting per user
+	CapReadOnly                    // 512 - only privileged users can post
+	CapTopics                      // 1024 - topic/thread-starter based
+)
+
+// ChannelTypeDefinition describes a registered channel type
+type ChannelTypeDefinition struct {
+	ID              string          `json:"id" db:"id"`
+	Name            string          `json:"name" db:"name"`
+	Description     string          `json:"description" db:"description"`
+	Icon            string          `json:"icon" db:"icon"`
+	Capabilities    int64           `json:"capabilities" db:"capabilities"`
+	DefaultMetadata json.RawMessage `json:"defaultMetadata" db:"default_metadata"`
+	BuiltIn         bool            `json:"builtIn" db:"built_in"`
+	PluginID        *string         `json:"pluginId,omitempty" db:"plugin_id"`
+	CreatedAt       time.Time       `json:"createdAt" db:"created_at"`
+}
+
+// HasCapability checks whether a type definition supports a given capability
+func (d *ChannelTypeDefinition) HasCapability(cap int64) bool {
+	return d.Capabilities&cap != 0
+}
 
 // VoiceState represents a user's voice connection state in a voice channel
 type VoiceState struct {
@@ -43,18 +78,19 @@ type ChannelCategory struct {
 }
 
 type Channel struct {
-	ID              uuid.UUID   `json:"id" db:"id"`
-	CommunityID     uuid.UUID   `json:"communityId" db:"community_id"`
-	CategoryID      *uuid.UUID  `json:"categoryId,omitempty" db:"category_id"`
-	Name            string      `json:"name" db:"name"`
-	Topic           *string     `json:"topic,omitempty" db:"topic"`
-	Type            ChannelType `json:"type" db:"type"`
-	Position        int         `json:"position" db:"position"`
-	IsNSFW          bool        `json:"isNsfw" db:"is_nsfw"`
-	SlowmodeSeconds int         `json:"slowmodeSeconds" db:"slowmode_seconds"`
-	LastMessageAt   *time.Time  `json:"lastMessageAt,omitempty" db:"last_message_at"`
-	CreatedAt       time.Time   `json:"createdAt" db:"created_at"`
-	UpdatedAt       time.Time   `json:"updatedAt" db:"updated_at"`
+	ID              uuid.UUID       `json:"id" db:"id"`
+	CommunityID     uuid.UUID       `json:"communityId" db:"community_id"`
+	CategoryID      *uuid.UUID      `json:"categoryId,omitempty" db:"category_id"`
+	Name            string          `json:"name" db:"name"`
+	Topic           *string         `json:"topic,omitempty" db:"topic"`
+	Type            ChannelType     `json:"type" db:"type"`
+	Position        int             `json:"position" db:"position"`
+	IsNSFW          bool            `json:"isNsfw" db:"is_nsfw"`
+	SlowmodeSeconds int             `json:"slowmodeSeconds" db:"slowmode_seconds"`
+	Metadata        json.RawMessage `json:"metadata" db:"metadata"`
+	LastMessageAt   *time.Time      `json:"lastMessageAt,omitempty" db:"last_message_at"`
+	CreatedAt       time.Time       `json:"createdAt" db:"created_at"`
+	UpdatedAt       time.Time       `json:"updatedAt" db:"updated_at"`
 }
 
 type ChannelPermission struct {

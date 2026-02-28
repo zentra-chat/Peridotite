@@ -87,6 +87,8 @@ func (h *Handler) CreateChannel(w http.ResponseWriter, r *http.Request) {
 		switch err {
 		case ErrInsufficientPerms:
 			utils.RespondError(w, http.StatusForbidden, "Insufficient permissions")
+		case ErrInvalidChannelType:
+			utils.RespondError(w, http.StatusBadRequest, "Invalid channel type")
 		default:
 			utils.RespondError(w, http.StatusInternalServerError, "Failed to create channel")
 		}
