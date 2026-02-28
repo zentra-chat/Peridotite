@@ -57,9 +57,6 @@ func (s *Service) JoinChannel(ctx context.Context, channelID, userID uuid.UUID) 
 		return nil, ErrInsufficientPerms
 	}
 
-	// Remove user from any existing voice channel first
-	_ = s.leaveAllChannels(ctx, userID)
-
 	state := &models.VoiceState{
 		ID:          uuid.New(),
 		ChannelID:   channelID,
@@ -71,7 +68,25 @@ func (s *Service) JoinChannel(ctx context.Context, channelID, userID uuid.UUID) 
 		JoinedAt:    time.Now(),
 	}
 
-	_, err = s.db.Exec(ctx,
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	// Serialize join attempts per user to avoid race conditions that could place
+	// a user in multiple channels when rapidly switching.
+	_, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, userID.String())
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = tx.Exec(ctx, `DELETE FROM voice_states WHERE user_id = $1`, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = tx.Exec(ctx,
 		`INSERT INTO voice_states (id, channel_id, user_id, is_muted, is_deafened, is_self_muted, is_self_deafened, joined_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (channel_id, user_id) DO UPDATE SET joined_at = $8`,
@@ -79,6 +94,10 @@ func (s *Service) JoinChannel(ctx context.Context, channelID, userID uuid.UUID) 
 		state.IsSelfMuted, state.IsSelfDeaf, state.JoinedAt,
 	)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 

@@ -282,6 +282,28 @@ func (c *Client) handleVoiceJoin(data json.RawMessage) {
 		return
 	}
 
+	// If the user is already in other voice channels, disconnect first and
+	// broadcast leave events so channel participant lists stay in sync.
+	previousChannelIDs, err := c.Hub.voiceService.DisconnectUser(context.Background(), c.UserID)
+	if err != nil {
+		log.Error().Err(err).
+			Str("userId", c.UserID.String()).
+			Msg("Failed to disconnect user from previous voice channels before join")
+	}
+
+	for _, previousChannelID := range previousChannelIDs {
+		if previousChannelID.String() == req.ChannelID {
+			continue
+		}
+		c.Hub.Broadcast(previousChannelID.String(), &Event{
+			Type: EventTypeVoiceLeave,
+			Data: map[string]interface{}{
+				"channelId": previousChannelID.String(),
+				"userId":    c.UserID.String(),
+			},
+		}, nil)
+	}
+
 	state, err := c.Hub.voiceService.JoinChannel(context.Background(), channelID, c.UserID)
 	if err != nil {
 		log.Error().Err(err).
@@ -299,9 +321,6 @@ func (c *Client) handleVoiceJoin(data json.RawMessage) {
 
 	// Get user info
 	u, _ := c.Hub.userService.GetUserByID(context.Background(), c.UserID)
-
-	// Subscribe to the voice channel for signaling
-	c.Hub.Subscribe(c, req.ChannelID)
 
 	// Get current participants for the joining user
 	states, _ := c.Hub.voiceService.GetChannelVoiceStates(context.Background(), channelID)
@@ -361,8 +380,6 @@ func (c *Client) handleVoiceLeave(data json.RawMessage) {
 		},
 	}, &c.ID)
 
-	// Unsubscribe from voice channel
-	c.Hub.Unsubscribe(c, req.ChannelID)
 }
 
 // handleVoiceStateUpdate handles mute/deafen state updates
