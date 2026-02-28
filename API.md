@@ -20,6 +20,7 @@ Welcome to the Zentra backend API documentation. This document covers RESTful en
 - **Base URL**: `http://localhost:8080/api/v1`
 - **Content Type**: `application/json` for all requests and responses.
 - **Authentication**: JWT-based via `Authorization: Bearer <token>` header.
+- **Token Lifetime**: Configured per server instance via `JWT_ACCESS_TOKEN_EXPIRY` and `JWT_REFRESH_TOKEN_EXPIRY`.
 - **Success Responses**: All successful non-paginated responses are wrapped in a JSON object with a `data` key.
   ```json
   {

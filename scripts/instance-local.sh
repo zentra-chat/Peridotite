@@ -20,6 +20,8 @@ Optional flags for `up`:
   --redis-port <port>
   --minio-port <port>
   --minio-console-port <port>
+  --jwt-access-expiry <duration>
+  --jwt-refresh-expiry <duration>
   --cors-origins <csv>
 
 Example:
@@ -80,6 +82,8 @@ MINIO_BUCKET_AVATARS=avatars
 MINIO_BUCKET_COMMUNITY=community-assets
 CDN_BASE_URL=http://localhost:${MINIO_PORT}
 JWT_SECRET=$(openssl rand -hex 32)
+JWT_ACCESS_TOKEN_EXPIRY=${JWT_ACCESS_TOKEN_EXPIRY}
+JWT_REFRESH_TOKEN_EXPIRY=${JWT_REFRESH_TOKEN_EXPIRY}
 ENCRYPTION_KEY=$(openssl rand -hex 32)
 CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS}
 EOF
@@ -105,6 +109,8 @@ REDIS_PORT=""
 MINIO_PORT=""
 MINIO_CONSOLE_PORT=""
 CORS_ALLOWED_ORIGINS="http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174,http://localhost:3000,http://127.0.0.1:3000"
+JWT_ACCESS_TOKEN_EXPIRY="15m"
+JWT_REFRESH_TOKEN_EXPIRY="2160h"
 PURGE="false"
 
 while [[ $# -gt 0 ]]; do
@@ -131,6 +137,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --minio-console-port)
       MINIO_CONSOLE_PORT="$2"
+      shift 2
+      ;;
+    --jwt-access-expiry)
+      JWT_ACCESS_TOKEN_EXPIRY="$2"
+      shift 2
+      ;;
+    --jwt-refresh-expiry)
+      JWT_REFRESH_TOKEN_EXPIRY="$2"
       shift 2
       ;;
     --cors-origins)

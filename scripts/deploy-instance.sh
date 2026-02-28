@@ -29,6 +29,8 @@ Options:
   --redis-port <port>               Redis port (default: 6379)
   --minio-port <port>               MinIO API port (default: 9000)
   --minio-console-port <port>       MinIO console port (default: 9001)
+  --jwt-access-expiry <duration>    Access token lifetime (default: 15m)
+  --jwt-refresh-expiry <duration>   Refresh token lifetime (default: 2160h)
   --domain <url>                    Public API base URL (e.g. https://api.example.com)
   --cors-origins <csv>              CORS origins list
   --discord-import-token <token>    Optional Discord import token
@@ -91,6 +93,8 @@ MINIO_BUCKET_AVATARS=${MINIO_BUCKET_AVATARS}
 MINIO_BUCKET_COMMUNITY=${MINIO_BUCKET_COMMUNITY}
 CDN_BASE_URL=${CDN_BASE_URL}
 JWT_SECRET=${JWT_SECRET}
+JWT_ACCESS_TOKEN_EXPIRY=${JWT_ACCESS_TOKEN_EXPIRY}
+JWT_REFRESH_TOKEN_EXPIRY=${JWT_REFRESH_TOKEN_EXPIRY}
 ENCRYPTION_KEY=${ENCRYPTION_KEY}
 CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS}
 DISCORD_IMPORT_TOKEN=${DISCORD_IMPORT_TOKEN}
@@ -129,6 +133,8 @@ run_deploy() {
     MINIO_BUCKET_AVATARS="${MINIO_BUCKET_AVATARS:-avatars}"
     MINIO_BUCKET_COMMUNITY="${MINIO_BUCKET_COMMUNITY:-community-assets}"
     JWT_SECRET="${JWT_SECRET:-$(openssl rand -hex 32)}"
+    JWT_ACCESS_TOKEN_EXPIRY="${JWT_ACCESS_TOKEN_EXPIRY:-15m}"
+    JWT_REFRESH_TOKEN_EXPIRY="${JWT_REFRESH_TOKEN_EXPIRY:-2160h}"
     ENCRYPTION_KEY="${ENCRYPTION_KEY:-$(openssl rand -hex 32)}"
     if [[ -n "${DOMAIN}" ]]; then
       CDN_BASE_URL="${DOMAIN}"
@@ -170,6 +176,8 @@ run_deploy() {
     MINIO_BUCKET_AVATARS="avatars"
     MINIO_BUCKET_COMMUNITY="community-assets"
     JWT_SECRET="$(openssl rand -hex 32)"
+    JWT_ACCESS_TOKEN_EXPIRY="15m"
+    JWT_REFRESH_TOKEN_EXPIRY="2160h"
     ENCRYPTION_KEY="$(openssl rand -hex 32)"
   fi
 
@@ -245,6 +253,8 @@ MINIO_CONSOLE_PORT="9001"
 DOMAIN=""
 CORS_ALLOWED_ORIGINS="*"
 DISCORD_IMPORT_TOKEN=""
+JWT_ACCESS_TOKEN_EXPIRY="15m"
+JWT_REFRESH_TOKEN_EXPIRY="2160h"
 FORCE_REGENERATE_ENV="false"
 
 if [[ $# -gt 0 && "${1}" != --* ]]; then
@@ -280,6 +290,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --minio-console-port)
       MINIO_CONSOLE_PORT="$2"
+      shift 2
+      ;;
+    --jwt-access-expiry)
+      JWT_ACCESS_TOKEN_EXPIRY="$2"
+      shift 2
+      ;;
+    --jwt-refresh-expiry)
+      JWT_REFRESH_TOKEN_EXPIRY="$2"
       shift 2
       ;;
     --domain)
