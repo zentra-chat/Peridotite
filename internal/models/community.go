@@ -63,6 +63,21 @@ type MemberRoleAssignment struct {
 	RoleID   uuid.UUID `json:"roleId" db:"role_id"`
 }
 
+type CommunityBan struct {
+	ID          uuid.UUID `json:"id" db:"id"`
+	CommunityID uuid.UUID `json:"communityId" db:"community_id"`
+	UserID      uuid.UUID `json:"userId" db:"user_id"`
+	BannedBy    uuid.UUID `json:"bannedBy" db:"banned_by"`
+	Reason      *string   `json:"reason,omitempty" db:"reason"`
+	CreatedAt   time.Time `json:"createdAt" db:"created_at"`
+}
+
+type CommunityBanWithUser struct {
+	CommunityBan
+	User         *PublicUser `json:"user,omitempty"`
+	BannedByUser *PublicUser `json:"bannedByUser,omitempty"`
+}
+
 // Permission flags (bitfield)
 const (
 	PermissionViewChannels      int64 = 1 << 0

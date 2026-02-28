@@ -32,6 +32,9 @@ var (
 	ErrInsufficientPerms = errors.New("insufficient permissions")
 	ErrRoleNotFound      = errors.New("role not found")
 	ErrCannotRemoveOwner = errors.New("cannot remove the owner")
+	ErrUserBanned        = errors.New("user is banned from this community")
+	ErrNotBanned         = errors.New("user is not banned from this community")
+	ErrCannotBanOwner    = errors.New("cannot ban the owner")
 )
 
 type Service struct {
@@ -1013,6 +1016,11 @@ func (s *Service) JoinCommunity(ctx context.Context, communityID, userID uuid.UU
 		return errors.New("this community requires an invite to join")
 	}
 
+	// Don't let banned users back in
+	if s.IsUserBanned(ctx, communityID, userID) {
+		return ErrUserBanned
+	}
+
 	return s.addMember(ctx, communityID, userID)
 }
 
@@ -1039,6 +1047,11 @@ func (s *Service) JoinWithInvite(ctx context.Context, code string, userID uuid.U
 	// Check max uses
 	if invite.MaxUses != nil && invite.UseCount >= *invite.MaxUses {
 		return nil, ErrInvalidInvite
+	}
+
+	// Don't let banned users back in via invite either
+	if s.IsUserBanned(ctx, invite.CommunityID, userID) {
+		return nil, ErrUserBanned
 	}
 
 	// Add member
@@ -1136,7 +1149,200 @@ func (s *Service) KickMember(ctx context.Context, communityID, actorID, targetID
 		`DELETE FROM community_members WHERE community_id = $1 AND user_id = $2`,
 		communityID, targetID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Log to audit trail
+	s.logAudit(ctx, &communityID, actorID, models.AuditActionMemberKick, "user", &targetID, nil)
+
+	return nil
+}
+
+// Ban Management
+
+type BanMemberRequest struct {
+	Reason *string `json:"reason" validate:"omitempty,max=512"`
+}
+
+func (s *Service) BanMember(ctx context.Context, communityID, actorID, targetID uuid.UUID, reason *string) error {
+	if err := s.requirePermission(ctx, communityID, actorID, models.PermissionBanMembers); err != nil {
+		return err
+	}
+
+	community, err := s.GetCommunity(ctx, communityID)
+	if err != nil {
+		return err
+	}
+	if community.OwnerID == targetID {
+		return ErrCannotBanOwner
+	}
+
+	return database.WithTransaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		// Remove from members if they're currently in the community
+		_, _ = tx.Exec(ctx,
+			`DELETE FROM community_members WHERE community_id = $1 AND user_id = $2`,
+			communityID, targetID,
+		)
+
+		// Insert the ban record
+		_, err := tx.Exec(ctx,
+			`INSERT INTO community_bans (id, community_id, user_id, banned_by, reason, created_at)
+			VALUES ($1, $2, $3, $4, $5, NOW())
+			ON CONFLICT (community_id, user_id) DO NOTHING`,
+			uuid.New(), communityID, targetID, actorID, reason,
+		)
+		if err != nil {
+			return err
+		}
+
+		// Write audit log
+		details, _ := json.Marshal(map[string]interface{}{"reason": reason})
+		s.logAudit(ctx, &communityID, actorID, models.AuditActionMemberBan, "user", &targetID, details)
+
+		return nil
+	})
+}
+
+func (s *Service) UnbanMember(ctx context.Context, communityID, actorID, targetID uuid.UUID) error {
+	if err := s.requirePermission(ctx, communityID, actorID, models.PermissionBanMembers); err != nil {
+		return err
+	}
+
+	result, err := s.db.Exec(ctx,
+		`DELETE FROM community_bans WHERE community_id = $1 AND user_id = $2`,
+		communityID, targetID,
+	)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return ErrNotBanned
+	}
+
+	s.logAudit(ctx, &communityID, actorID, models.AuditActionMemberUnban, "user", &targetID, nil)
+
+	return nil
+}
+
+func (s *Service) GetBans(ctx context.Context, communityID, actorID uuid.UUID) ([]*models.CommunityBanWithUser, error) {
+	if err := s.requirePermission(ctx, communityID, actorID, models.PermissionBanMembers); err != nil {
+		return nil, err
+	}
+
+	rows, err := s.db.Query(ctx,
+		`SELECT cb.id, cb.community_id, cb.user_id, cb.banned_by, cb.reason, cb.created_at,
+			u.id, u.username, u.display_name, u.avatar_url, u.bio, u.status, u.custom_status, u.created_at,
+			b.id, b.username, b.display_name, b.avatar_url, b.bio, b.status, b.custom_status, b.created_at
+		FROM community_bans cb
+		JOIN users u ON u.id = cb.user_id
+		JOIN users b ON b.id = cb.banned_by
+		WHERE cb.community_id = $1
+		ORDER BY cb.created_at DESC`,
+		communityID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var bans []*models.CommunityBanWithUser
+	for rows.Next() {
+		ban := &models.CommunityBanWithUser{}
+		user := &models.PublicUser{}
+		bannedByUser := &models.PublicUser{}
+		err := rows.Scan(
+			&ban.ID, &ban.CommunityID, &ban.UserID, &ban.BannedBy, &ban.Reason, &ban.CreatedAt,
+			&user.ID, &user.Username, &user.DisplayName, &user.AvatarURL, &user.Bio, &user.Status, &user.CustomStatus, &user.CreatedAt,
+			&bannedByUser.ID, &bannedByUser.Username, &bannedByUser.DisplayName, &bannedByUser.AvatarURL, &bannedByUser.Bio, &bannedByUser.Status, &bannedByUser.CustomStatus, &bannedByUser.CreatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		ban.User = user
+		ban.BannedByUser = bannedByUser
+		bans = append(bans, ban)
+	}
+
+	return bans, nil
+}
+
+func (s *Service) IsUserBanned(ctx context.Context, communityID, userID uuid.UUID) bool {
+	var exists bool
+	err := s.db.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM community_bans WHERE community_id = $1 AND user_id = $2)`,
+		communityID, userID,
+	).Scan(&exists)
+	if err != nil {
+		return false
+	}
+	return exists
+}
+
+// Audit Log
+
+func (s *Service) GetAuditLogs(ctx context.Context, communityID, actorID uuid.UUID, limit, offset int) ([]*models.AuditLogWithActor, int64, error) {
+	if err := s.requirePermission(ctx, communityID, actorID, models.PermissionViewAuditLog); err != nil {
+		return nil, 0, err
+	}
+
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+
+	var total int64
+	err := s.db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM audit_logs WHERE community_id = $1`,
+		communityID,
+	).Scan(&total)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	rows, err := s.db.Query(ctx,
+		`SELECT al.id, al.community_id, al.actor_id, al.action, al.target_type, al.target_id, al.details, al.created_at,
+			u.id, u.username, u.display_name, u.avatar_url, u.bio, u.status, u.custom_status, u.created_at
+		FROM audit_logs al
+		JOIN users u ON u.id = al.actor_id
+		WHERE al.community_id = $1
+		ORDER BY al.created_at DESC
+		LIMIT $2 OFFSET $3`,
+		communityID, limit, offset,
+	)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var logs []*models.AuditLogWithActor
+	for rows.Next() {
+		entry := &models.AuditLogWithActor{}
+		actor := &models.PublicUser{}
+		err := rows.Scan(
+			&entry.ID, &entry.CommunityID, &entry.ActorID, &entry.Action,
+			&entry.TargetType, &entry.TargetID, &entry.Details, &entry.CreatedAt,
+			&actor.ID, &actor.Username, &actor.DisplayName, &actor.AvatarURL,
+			&actor.Bio, &actor.Status, &actor.CustomStatus, &actor.CreatedAt,
+		)
+		if err != nil {
+			return nil, 0, err
+		}
+		entry.Actor = actor
+		logs = append(logs, entry)
+	}
+
+	return logs, total, nil
+}
+
+func (s *Service) logAudit(ctx context.Context, communityID *uuid.UUID, actorID uuid.UUID, action string, targetType string, targetID *uuid.UUID, details []byte) {
+	_, err := s.db.Exec(ctx,
+		`INSERT INTO audit_logs (id, community_id, actor_id, action, target_type, target_id, details, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
+		uuid.New(), communityID, actorID, action, targetType, targetID, details,
+	)
+	if err != nil {
+		log.Error().Err(err).Str("action", action).Msg("Failed to write audit log")
+	}
 }
 
 // Invites

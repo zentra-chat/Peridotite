@@ -57,6 +57,14 @@ func (h *Handler) Routes(secret string) chi.Router {
 			r.Get("/members/{userId}/roles", h.GetMemberRoles)
 			r.Put("/members/{userId}/roles", h.SetMemberRoles)
 
+			// Bans
+			r.Get("/bans", h.GetBans)
+			r.Post("/bans/{userId}", h.BanMember)
+			r.Delete("/bans/{userId}", h.UnbanMember)
+
+			// Audit Log
+			r.Get("/audit-log", h.GetAuditLog)
+
 			// Invites
 			r.Get("/invites", h.GetInvites)
 			r.Post("/invites", h.CreateInvite)
@@ -331,6 +339,8 @@ func (h *Handler) JoinCommunity(w http.ResponseWriter, r *http.Request) {
 			utils.RespondError(w, http.StatusNotFound, "Community not found")
 		case ErrAlreadyMember:
 			utils.RespondError(w, http.StatusConflict, "Already a member of this community")
+		case ErrUserBanned:
+			utils.RespondError(w, http.StatusForbidden, "You are banned from this community")
 		default:
 			utils.RespondError(w, http.StatusInternalServerError, "Failed to join community")
 		}
@@ -360,6 +370,8 @@ func (h *Handler) JoinWithInvite(w http.ResponseWriter, r *http.Request) {
 			utils.RespondError(w, http.StatusBadRequest, "Invalid or expired invite")
 		case ErrAlreadyMember:
 			utils.RespondError(w, http.StatusConflict, "Already a member of this community")
+		case ErrUserBanned:
+			utils.RespondError(w, http.StatusForbidden, "You are banned from this community")
 		default:
 			utils.RespondError(w, http.StatusInternalServerError, "Failed to join community")
 		}
@@ -485,6 +497,136 @@ func (h *Handler) KickMember(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.RespondNoContent(w)
+}
+
+func (h *Handler) BanMember(w http.ResponseWriter, r *http.Request) {
+	userID, err := middleware.RequireAuth(r.Context())
+	if err != nil {
+		utils.RespondError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	communityID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		utils.RespondError(w, http.StatusBadRequest, "Invalid community ID")
+		return
+	}
+
+	targetID, err := uuid.Parse(chi.URLParam(r, "userId"))
+	if err != nil {
+		utils.RespondError(w, http.StatusBadRequest, "Invalid user ID")
+		return
+	}
+
+	var req BanMemberRequest
+	// Body is optional for bans (reason is optional)
+	_ = utils.DecodeJSON(r, &req)
+
+	if err := h.service.BanMember(r.Context(), communityID, userID, targetID, req.Reason); err != nil {
+		switch err {
+		case ErrInsufficientPerms:
+			utils.RespondError(w, http.StatusForbidden, "Insufficient permissions")
+		case ErrCannotBanOwner:
+			utils.RespondError(w, http.StatusForbidden, "Cannot ban the owner")
+		default:
+			utils.RespondError(w, http.StatusInternalServerError, "Failed to ban member")
+		}
+		return
+	}
+
+	utils.RespondNoContent(w)
+}
+
+func (h *Handler) UnbanMember(w http.ResponseWriter, r *http.Request) {
+	userID, err := middleware.RequireAuth(r.Context())
+	if err != nil {
+		utils.RespondError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	communityID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		utils.RespondError(w, http.StatusBadRequest, "Invalid community ID")
+		return
+	}
+
+	targetID, err := uuid.Parse(chi.URLParam(r, "userId"))
+	if err != nil {
+		utils.RespondError(w, http.StatusBadRequest, "Invalid user ID")
+		return
+	}
+
+	if err := h.service.UnbanMember(r.Context(), communityID, userID, targetID); err != nil {
+		switch err {
+		case ErrInsufficientPerms:
+			utils.RespondError(w, http.StatusForbidden, "Insufficient permissions")
+		case ErrNotBanned:
+			utils.RespondError(w, http.StatusNotFound, "User is not banned")
+		default:
+			utils.RespondError(w, http.StatusInternalServerError, "Failed to unban member")
+		}
+		return
+	}
+
+	utils.RespondNoContent(w)
+}
+
+func (h *Handler) GetBans(w http.ResponseWriter, r *http.Request) {
+	userID, err := middleware.RequireAuth(r.Context())
+	if err != nil {
+		utils.RespondError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	communityID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		utils.RespondError(w, http.StatusBadRequest, "Invalid community ID")
+		return
+	}
+
+	bans, err := h.service.GetBans(r.Context(), communityID, userID)
+	if err != nil {
+		switch err {
+		case ErrInsufficientPerms:
+			utils.RespondError(w, http.StatusForbidden, "Insufficient permissions")
+		default:
+			utils.RespondError(w, http.StatusInternalServerError, "Failed to get bans")
+		}
+		return
+	}
+
+	utils.RespondSuccess(w, bans)
+}
+
+func (h *Handler) GetAuditLog(w http.ResponseWriter, r *http.Request) {
+	userID, err := middleware.RequireAuth(r.Context())
+	if err != nil {
+		utils.RespondError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	communityID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		utils.RespondError(w, http.StatusBadRequest, "Invalid community ID")
+		return
+	}
+
+	page := utils.GetQueryInt(r, "page", 1)
+	pageSize := utils.GetQueryInt(r, "pageSize", 50)
+	offset := (page - 1) * pageSize
+
+	logs, total, err := h.service.GetAuditLogs(r.Context(), communityID, userID, pageSize, offset)
+	if err != nil {
+		switch err {
+		case ErrInsufficientPerms:
+			utils.RespondError(w, http.StatusForbidden, "Insufficient permissions")
+		default:
+			utils.RespondError(w, http.StatusInternalServerError, "Failed to get audit log")
+		}
+		return
+	}
+
+	utils.RespondPaginated(w, logs, total, page, pageSize)
 }
 
 func (h *Handler) GetInvites(w http.ResponseWriter, r *http.Request) {
