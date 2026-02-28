@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -534,8 +535,8 @@ func (s *Service) DeleteMessage(ctx context.Context, messageID, userID uuid.UUID
 
 // AddReaction adds a reaction to a message
 func (s *Service) AddReaction(ctx context.Context, messageID, userID uuid.UUID, emoji string) error {
-	// Validate emoji (basic check - could be more sophisticated)
-	if len(emoji) == 0 || len(emoji) > 32 {
+	emoji = strings.TrimSpace(emoji)
+	if len(emoji) == 0 || len(emoji) > 128 {
 		return ErrInvalidReaction
 	}
 
