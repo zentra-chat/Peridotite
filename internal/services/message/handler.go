@@ -326,6 +326,8 @@ func (h *Handler) PinMessage(w http.ResponseWriter, r *http.Request) {
 		switch err {
 		case ErrMessageNotFound:
 			utils.RespondError(w, http.StatusNotFound, "Message not found")
+		case ErrInsufficientPerms:
+			utils.RespondError(w, http.StatusForbidden, "Cannot pin messages in this channel")
 		default:
 			utils.RespondError(w, http.StatusInternalServerError, "Failed to pin message")
 		}
@@ -352,6 +354,8 @@ func (h *Handler) UnpinMessage(w http.ResponseWriter, r *http.Request) {
 		switch err {
 		case ErrMessageNotFound:
 			utils.RespondError(w, http.StatusNotFound, "Message not found")
+		case ErrInsufficientPerms:
+			utils.RespondError(w, http.StatusForbidden, "Cannot unpin messages in this channel")
 		default:
 			utils.RespondError(w, http.StatusInternalServerError, "Failed to unpin message")
 		}

@@ -38,6 +38,7 @@ type ChannelServiceInterface interface {
 	CanAccessChannel(ctx context.Context, channelID, userID uuid.UUID) bool
 	CanSendMessage(ctx context.Context, channelID, userID uuid.UUID) bool
 	CanManageMessages(ctx context.Context, channelID, userID uuid.UUID) bool
+	CanPinMessages(ctx context.Context, channelID, userID uuid.UUID) bool
 	CanMentionEveryone(ctx context.Context, channelID, userID uuid.UUID) bool
 }
 
@@ -640,14 +641,28 @@ func (s *Service) PinMessage(ctx context.Context, messageID, userID uuid.UUID, p
 		return err
 	}
 
-	// Check if user has permission to pin (would need channel service)
-	// For now, assume permission check is done at handler level
+	if !s.channelService.CanPinMessages(ctx, channelID, userID) {
+		return ErrInsufficientPerms
+	}
+
+	updatedAt := time.Now()
 
 	_, err = s.db.Exec(ctx,
 		`UPDATE messages SET is_pinned = $1, updated_at = $2 WHERE id = $3`,
-		pin, time.Now(), messageID,
+		pin, updatedAt, messageID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+
+	updatedMessage, err := s.GetMessage(ctx, messageID, userID)
+	if err != nil {
+		return err
+	}
+
+	s.broadcast(ctx, channelID.String(), "MESSAGE_UPDATE", updatedMessage)
+
+	return nil
 }
 
 // GetPinnedMessages gets all pinned messages in a channel
@@ -837,6 +852,10 @@ func (s *Service) getReplyPreview(ctx context.Context, messageID uuid.UUID) (*Me
 
 func (s *Service) CanManageMessages(ctx context.Context, channelID, userID uuid.UUID) bool {
 	return s.channelService.CanManageMessages(ctx, channelID, userID)
+}
+
+func (s *Service) CanPinMessages(ctx context.Context, channelID, userID uuid.UUID) bool {
+	return s.channelService.CanPinMessages(ctx, channelID, userID)
 }
 
 func (s *Service) batchGetAttachments(ctx context.Context, messageIDs []uuid.UUID) map[uuid.UUID][]models.MessageAttachment {

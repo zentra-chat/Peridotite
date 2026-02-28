@@ -435,6 +435,15 @@ func (s *Service) CanManageMessages(ctx context.Context, channelID, userID uuid.
 	return models.HasPermission(permissions, models.PermissionManageMessages)
 }
 
+func (s *Service) CanPinMessages(ctx context.Context, channelID, userID uuid.UUID) bool {
+	permissions, err := s.getChannelPermissions(ctx, channelID, userID)
+	if err != nil {
+		return false
+	}
+
+	return models.HasPermission(permissions, models.PermissionPinMessages)
+}
+
 func (s *Service) CanMentionEveryone(ctx context.Context, channelID, userID uuid.UUID) bool {
 	permissions, err := s.getChannelPermissions(ctx, channelID, userID)
 	if err != nil {
