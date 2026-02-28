@@ -26,6 +26,7 @@ import (
 	"github.com/zentra/peridotite/internal/services/media"
 	"github.com/zentra/peridotite/internal/services/message"
 	"github.com/zentra/peridotite/internal/services/notification"
+	"github.com/zentra/peridotite/internal/services/plugin"
 	"github.com/zentra/peridotite/internal/services/user"
 	"github.com/zentra/peridotite/internal/services/voice"
 	"github.com/zentra/peridotite/internal/services/websocket"
@@ -97,6 +98,9 @@ func main() {
 	// Initialize voice service
 	voiceService := voice.NewService(db, channelService, userService)
 
+	// Initialize plugin service
+	pluginService := plugin.NewService(db, channelTypeRegistry)
+
 	// Initialize WebSocket hub
 	wsHub := websocket.NewHub(redisClient, channelService, userService, dmService, voiceService)
 	go wsHub.Run(context.Background())
@@ -119,6 +123,7 @@ func main() {
 	wsHandler := websocket.NewHandler(wsHub, cfg.JWT.Secret)
 	voiceHandler := voice.NewHandler(voiceService)
 	notificationHandler := notification.NewHandler(notificationService)
+	pluginHandler := plugin.NewHandler(pluginService)
 
 	// Create router
 	r := chi.NewRouter()
@@ -128,7 +133,6 @@ func main() {
 	r.Use(chimiddleware.RealIP)
 	r.Use(middleware.LoggingMiddleware)
 	r.Use(chimiddleware.Recoverer)
-	r.Use(chimiddleware.RedirectSlashes)
 
 	// CORS
 	r.Use(cors.Handler(cors.Options{
@@ -140,6 +144,7 @@ func main() {
 		MaxAge:           300,
 		Debug:            cfg.Environment == "development",
 	}))
+	r.Use(chimiddleware.RedirectSlashes)
 
 	// Security headers
 	r.Use(middleware.SecurityHeadersMiddleware)
@@ -174,6 +179,7 @@ func main() {
 			r.Mount("/emojis", emojiHandler.Routes())
 			r.Mount("/notifications", notificationHandler.Routes())
 			r.Mount("/voice", voiceHandler.Routes())
+			r.Mount("/plugins", pluginHandler.Routes())
 		})
 	})
 
