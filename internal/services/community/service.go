@@ -806,6 +806,25 @@ func (s *Service) UpdateCommunity(ctx context.Context, communityID, userID uuid.
 		s.broadcast(ctx, communityID, "COMMUNITY_UPDATE", community)
 	}
 
+	// Log what changed
+	changes := map[string]interface{}{}
+	if req.Name != nil {
+		changes["name"] = *req.Name
+	}
+	if req.Description != nil {
+		changes["description"] = *req.Description
+	}
+	if req.IsPublic != nil {
+		changes["isPublic"] = *req.IsPublic
+	}
+	if req.IsOpen != nil {
+		changes["isOpen"] = *req.IsOpen
+	}
+	if len(changes) > 0 {
+		details, _ := json.Marshal(changes)
+		s.LogAudit(ctx, &communityID, userID, models.AuditActionCommunityUpdate, "community", &communityID, details)
+	}
+
 	return community, err
 }
 
@@ -822,6 +841,8 @@ func (s *Service) UpdateCommunityIcon(ctx context.Context, communityID, userID u
 		if community, err := s.GetCommunity(ctx, communityID); err == nil {
 			s.broadcast(ctx, communityID, "COMMUNITY_UPDATE", community)
 		}
+		details, _ := json.Marshal(map[string]string{"field": "icon"})
+		s.LogAudit(ctx, &communityID, userID, models.AuditActionCommunityUpdate, "community", &communityID, details)
 	}
 	return err
 }
@@ -856,6 +877,8 @@ func (s *Service) RemoveCommunityIcon(ctx context.Context, communityID, userID u
 		if community, err := s.GetCommunity(ctx, communityID); err == nil {
 			s.broadcast(ctx, communityID, "COMMUNITY_UPDATE", community)
 		}
+		details, _ := json.Marshal(map[string]string{"field": "icon", "action": "removed"})
+		s.LogAudit(ctx, &communityID, userID, models.AuditActionCommunityUpdate, "community", &communityID, details)
 	}
 	return err
 }
@@ -891,6 +914,10 @@ func (s *Service) DeleteCommunity(ctx context.Context, communityID, userID uuid.
 		`UPDATE communities SET deleted_at = NOW() WHERE id = $1`,
 		communityID,
 	)
+	if err == nil {
+		details, _ := json.Marshal(map[string]string{"name": community.Name})
+		s.LogAudit(ctx, &communityID, userID, models.AuditActionCommunityDelete, "community", &communityID, details)
+	}
 	return err
 }
 
@@ -1021,7 +1048,12 @@ func (s *Service) JoinCommunity(ctx context.Context, communityID, userID uuid.UU
 		return ErrUserBanned
 	}
 
-	return s.addMember(ctx, communityID, userID)
+	if err := s.addMember(ctx, communityID, userID); err != nil {
+		return err
+	}
+
+	s.LogAudit(ctx, &communityID, userID, models.AuditActionMemberJoin, "user", &userID, nil)
+	return nil
 }
 
 func (s *Service) JoinWithInvite(ctx context.Context, code string, userID uuid.UUID) (*models.Community, error) {
@@ -1058,6 +1090,8 @@ func (s *Service) JoinWithInvite(ctx context.Context, code string, userID uuid.U
 	if err := s.addMember(ctx, invite.CommunityID, userID); err != nil {
 		return nil, err
 	}
+
+	s.LogAudit(ctx, &invite.CommunityID, userID, models.AuditActionMemberJoin, "user", &userID, nil)
 
 	// Increment use count
 	_, err = s.db.Exec(ctx,
@@ -1129,6 +1163,9 @@ func (s *Service) LeaveCommunity(ctx context.Context, communityID, userID uuid.U
 		`DELETE FROM community_members WHERE community_id = $1 AND user_id = $2`,
 		communityID, userID,
 	)
+	if err == nil {
+		s.LogAudit(ctx, &communityID, userID, models.AuditActionMemberLeave, "user", &userID, nil)
+	}
 	return err
 }
 
@@ -1154,7 +1191,7 @@ func (s *Service) KickMember(ctx context.Context, communityID, actorID, targetID
 	}
 
 	// Log to audit trail
-	s.logAudit(ctx, &communityID, actorID, models.AuditActionMemberKick, "user", &targetID, nil)
+	s.LogAudit(ctx, &communityID, actorID, models.AuditActionMemberKick, "user", &targetID, nil)
 
 	return nil
 }
@@ -1198,7 +1235,7 @@ func (s *Service) BanMember(ctx context.Context, communityID, actorID, targetID 
 
 		// Write audit log
 		details, _ := json.Marshal(map[string]interface{}{"reason": reason})
-		s.logAudit(ctx, &communityID, actorID, models.AuditActionMemberBan, "user", &targetID, details)
+		s.LogAudit(ctx, &communityID, actorID, models.AuditActionMemberBan, "user", &targetID, details)
 
 		return nil
 	})
@@ -1220,7 +1257,7 @@ func (s *Service) UnbanMember(ctx context.Context, communityID, actorID, targetI
 		return ErrNotBanned
 	}
 
-	s.logAudit(ctx, &communityID, actorID, models.AuditActionMemberUnban, "user", &targetID, nil)
+	s.LogAudit(ctx, &communityID, actorID, models.AuditActionMemberUnban, "user", &targetID, nil)
 
 	return nil
 }
@@ -1334,7 +1371,7 @@ func (s *Service) GetAuditLogs(ctx context.Context, communityID, actorID uuid.UU
 	return logs, total, nil
 }
 
-func (s *Service) logAudit(ctx context.Context, communityID *uuid.UUID, actorID uuid.UUID, action string, targetType string, targetID *uuid.UUID, details []byte) {
+func (s *Service) LogAudit(ctx context.Context, communityID *uuid.UUID, actorID uuid.UUID, action string, targetType string, targetID *uuid.UUID, details []byte) {
 	_, err := s.db.Exec(ctx,
 		`INSERT INTO audit_logs (id, community_id, actor_id, action, target_type, target_id, details, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
@@ -1380,6 +1417,8 @@ func (s *Service) CreateInvite(ctx context.Context, communityID, userID uuid.UUI
 	if err != nil {
 		return nil, err
 	}
+
+	s.LogAudit(ctx, &communityID, userID, models.AuditActionInviteCreate, "invite", &invite.ID, nil)
 
 	return invite, nil
 }
@@ -1441,18 +1480,22 @@ func (s *Service) DeleteInvite(ctx context.Context, communityID, inviteID, userI
 		canManageAll = true
 	}
 
+	var err error
 	if canManageAll {
-		_, err := s.db.Exec(ctx,
+		_, err = s.db.Exec(ctx,
 			`DELETE FROM community_invites WHERE id = $1 AND community_id = $2`,
 			inviteID, communityID,
 		)
-		return err
+	} else {
+		_, err = s.db.Exec(ctx,
+			`DELETE FROM community_invites WHERE id = $1 AND community_id = $2 AND created_by = $3`,
+			inviteID, communityID, userID,
+		)
 	}
 
-	_, err := s.db.Exec(ctx,
-		`DELETE FROM community_invites WHERE id = $1 AND community_id = $2 AND created_by = $3`,
-		inviteID, communityID, userID,
-	)
+	if err == nil {
+		s.LogAudit(ctx, &communityID, userID, models.AuditActionInviteDelete, "invite", &inviteID, nil)
+	}
 	return err
 }
 
@@ -1528,6 +1571,9 @@ func (s *Service) CreateRole(ctx context.Context, communityID, userID uuid.UUID,
 		return nil, err
 	}
 
+	details, _ := json.Marshal(map[string]string{"name": role.Name})
+	s.LogAudit(ctx, &communityID, userID, models.AuditActionRoleCreate, "role", &role.ID, details)
+
 	return role, nil
 }
 
@@ -1553,6 +1599,9 @@ func (s *Service) DeleteRole(ctx context.Context, communityID, roleID, userID uu
 	}
 
 	_, err = s.db.Exec(ctx, `DELETE FROM roles WHERE id = $1 AND community_id = $2`, roleID, communityID)
+	if err == nil {
+		s.LogAudit(ctx, &communityID, userID, models.AuditActionRoleDelete, "role", &roleID, nil)
+	}
 	return err
 }
 
@@ -1587,6 +1636,18 @@ func (s *Service) UpdateRole(ctx context.Context, communityID, roleID, userID uu
 	)
 	if err != nil {
 		return nil, err
+	}
+
+	changes := map[string]interface{}{}
+	if req.Name != nil {
+		changes["name"] = *req.Name
+	}
+	if req.Permissions != nil {
+		changes["permissions"] = *req.Permissions
+	}
+	if len(changes) > 0 {
+		details, _ := json.Marshal(changes)
+		s.LogAudit(ctx, &communityID, userID, models.AuditActionRoleUpdate, "role", &roleID, details)
 	}
 
 	return s.GetRole(ctx, communityID, roleID)

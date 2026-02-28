@@ -1,20 +1,21 @@
 package models
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
 )
 
 type AuditLog struct {
-	ID          uuid.UUID  `json:"id" db:"id"`
-	CommunityID *uuid.UUID `json:"communityId,omitempty" db:"community_id"`
-	ActorID     uuid.UUID  `json:"actorId" db:"actor_id"`
-	Action      string     `json:"action" db:"action"`
-	TargetType  *string    `json:"targetType,omitempty" db:"target_type"`
-	TargetID    *uuid.UUID `json:"targetId,omitempty" db:"target_id"`
-	Details     []byte     `json:"details,omitempty" db:"details"`
-	CreatedAt   time.Time  `json:"createdAt" db:"created_at"`
+	ID          uuid.UUID       `json:"id" db:"id"`
+	CommunityID *uuid.UUID      `json:"communityId,omitempty" db:"community_id"`
+	ActorID     uuid.UUID       `json:"actorId" db:"actor_id"`
+	Action      string          `json:"action" db:"action"`
+	TargetType  *string         `json:"targetType,omitempty" db:"target_type"`
+	TargetID    *uuid.UUID      `json:"targetId,omitempty" db:"target_id"`
+	Details     json.RawMessage `json:"details,omitempty" db:"details"`
+	CreatedAt   time.Time       `json:"createdAt" db:"created_at"`
 }
 
 // Audit action types

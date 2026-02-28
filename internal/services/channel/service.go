@@ -2,6 +2,7 @@ package channel
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -76,6 +77,9 @@ func (s *Service) CreateChannel(ctx context.Context, communityID, userID uuid.UU
 	if err != nil {
 		return nil, err
 	}
+
+	details, _ := json.Marshal(map[string]string{"name": channel.Name, "type": string(channel.Type)})
+	s.communityService.LogAudit(ctx, &communityID, userID, models.AuditActionChannelCreate, "channel", &channel.ID, details)
 
 	return channel, nil
 }
@@ -163,6 +167,18 @@ func (s *Service) UpdateChannel(ctx context.Context, channelID, userID uuid.UUID
 		return nil, err
 	}
 
+	changes := map[string]interface{}{}
+	if req.Name != nil {
+		changes["name"] = *req.Name
+	}
+	if req.Topic != nil {
+		changes["topic"] = *req.Topic
+	}
+	if len(changes) > 0 {
+		details, _ := json.Marshal(changes)
+		s.communityService.LogAudit(ctx, &channel.CommunityID, userID, models.AuditActionChannelUpdate, "channel", &channelID, details)
+	}
+
 	return s.GetChannel(ctx, channelID)
 }
 
@@ -176,7 +192,12 @@ func (s *Service) DeleteChannel(ctx context.Context, channelID, userID uuid.UUID
 		return err
 	}
 
+	details, _ := json.Marshal(map[string]string{"name": channel.Name})
+
 	_, err = s.db.Exec(ctx, `DELETE FROM channels WHERE id = $1`, channelID)
+	if err == nil {
+		s.communityService.LogAudit(ctx, &channel.CommunityID, userID, models.AuditActionChannelDelete, "channel", &channelID, details)
+	}
 	return err
 }
 
