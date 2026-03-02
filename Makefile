@@ -1,4 +1,4 @@
-.PHONY: all build run test clean docker-up docker-down migrate help instance-up instance-down instance-logs deploy-instance
+.PHONY: all build run test clean docker-up docker-down docker-logs docker-restart migrate-up migrate-down help
 
 # Variables
 BINARY_NAME=gateway
@@ -69,51 +69,31 @@ lint:
 ## docker-up: Start Docker containers
 docker-up:
 	@echo "Starting Docker containers..."
-	docker-compose up -d
+	docker compose up -d --build
 
 ## docker-down: Stop Docker containers
 docker-down:
 	@echo "Stopping Docker containers..."
-	docker-compose down
+	docker compose down
 
 ## docker-logs: View Docker logs
 docker-logs:
-	docker-compose logs -f
+	docker compose logs -f api
 
-## instance-up: Start a named isolated instance stack (INSTANCE=name)
-instance-up:
-	@if [ -z "$(INSTANCE)" ]; then echo "Usage: make instance-up INSTANCE=test2"; exit 1; fi
-	@chmod +x scripts/instance-local.sh
-	@./scripts/instance-local.sh up --name $(INSTANCE)
-
-## instance-down: Stop a named isolated instance stack (INSTANCE=name)
-instance-down:
-	@if [ -z "$(INSTANCE)" ]; then echo "Usage: make instance-down INSTANCE=test2"; exit 1; fi
-	@chmod +x scripts/instance-local.sh
-	@./scripts/instance-local.sh down --name $(INSTANCE)
-
-## instance-logs: Stream API logs from a named isolated instance stack (INSTANCE=name)
-instance-logs:
-	@if [ -z "$(INSTANCE)" ]; then echo "Usage: make instance-logs INSTANCE=test2"; exit 1; fi
-	@chmod +x scripts/instance-local.sh
-	@./scripts/instance-local.sh logs --name $(INSTANCE)
-
-## deploy-instance: Deploy a named instance on current machine (INSTANCE=name)
-deploy-instance:
-	@if [ -z "$(INSTANCE)" ]; then echo "Usage: make deploy-instance INSTANCE=prod-us"; exit 1; fi
-	@chmod +x scripts/deploy-instance.sh
-	@./scripts/deploy-instance.sh --name $(INSTANCE)
+## docker-restart: Rebuild and restart full stack
+docker-restart:
+	@echo "Rebuilding and restarting Docker containers..."
+	docker compose up -d --build
 
 ## migrate-up: Run database migrations
 migrate-up:
 	@echo "Running migrations..."
-	@chmod +x scripts/migrate.sh
-	@. ./.env && ./scripts/migrate.sh
+	docker compose run --rm migrate up
 
 ## migrate-down: Rollback database migrations
 migrate-down:
-	@echo "Rolling back migrations..."
-	@. ./.env && psql $$DATABASE_URL < migrations/000001_initial_schema.down.sql
+	@echo "Rolling back one migration..."
+	docker compose run --rm migrate down 1
 
 ## setup: Full development setup
 setup:
