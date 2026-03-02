@@ -47,7 +47,7 @@ Peridotite is the backend server for Zentra, an encrypted community chat applica
    docker compose up -d --build api
    ```
 
-The API will be available at `http://localhost:8080`
+The API will be available at `http://localhost:63566` (default `API_PORT`).
 
 For full API details, see [API.md](API.md).
 
@@ -67,6 +67,15 @@ docker compose logs -f api
 
 # stop stack
 docker compose down
+```
+
+For custom host settings, set values in `.env` before starting:
+
+```bash
+API_PORT=8080
+POSTGRES_PASSWORD=change-me
+JWT_SECRET=change-me
+ENCRYPTION_KEY=64_hex_chars_here
 ```
 
 To remove containers and volumes:

@@ -4,6 +4,7 @@ Welcome to the Zentra backend API documentation. This document covers RESTful en
 
 ## Table of Contents
 - [General Information](#general-information)
+- [Hosting (Docker Compose)](#hosting-docker-compose)
 - [Common Data Models](#common-data-models)
 - [Authentication](#authentication)
 - [User Management](#user-management)
@@ -17,7 +18,7 @@ Welcome to the Zentra backend API documentation. This document covers RESTful en
 
 ## General Information
 
-- **Base URL**: `http://localhost:8080/api/v1`
+- **Base URL (Docker Compose default)**: `http://localhost:63566/api/v1`
 - **Content Type**: `application/json` for all requests and responses.
 - **Authentication**: JWT-based via `Authorization: Bearer <token>` header.
 - **Token Lifetime**: Configured per server instance via `JWT_ACCESS_TOKEN_EXPIRY` and `JWT_REFRESH_TOKEN_EXPIRY`.
@@ -45,6 +46,35 @@ Welcome to the Zentra backend API documentation. This document covers RESTful en
     "details": { ... } // Optional object for validation errors
   }
   ```
+
+---
+
+## Hosting (Docker Compose)
+
+Run the backend stack with Docker Compose:
+
+```bash
+# start full stack
+docker compose up -d --build
+
+# follow API logs
+docker compose logs -f api
+
+# stop stack
+docker compose down
+```
+
+Run migrations with the dedicated migration container:
+
+```bash
+# apply all pending migrations
+docker compose run --rm migrate up
+
+# rollback one migration
+docker compose run --rm migrate down 1
+```
+
+If you override ports in `.env`, update your base URL accordingly.
 
 ---
 
