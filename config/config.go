@@ -45,6 +45,9 @@ type Config struct {
 	Discord struct {
 		ImportToken string
 	}
+	GitHub struct {
+		Token string
+	}
 }
 
 var AppConfig *Config
@@ -106,6 +109,9 @@ func Load() (*Config, error) {
 
 	// Discord import integration
 	cfg.Discord.ImportToken = strings.TrimSpace(getEnv("DISCORD_IMPORT_TOKEN", ""))
+
+	// GitHub API integration
+	cfg.GitHub.Token = strings.TrimSpace(getEnv("GITHUB_TOKEN", ""))
 
 	AppConfig = cfg
 	return cfg, nil

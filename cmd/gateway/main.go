@@ -23,6 +23,7 @@ import (
 	"github.com/zentra/peridotite/internal/services/community"
 	"github.com/zentra/peridotite/internal/services/dm"
 	"github.com/zentra/peridotite/internal/services/emoji"
+	"github.com/zentra/peridotite/internal/services/githubstats"
 	"github.com/zentra/peridotite/internal/services/media"
 	"github.com/zentra/peridotite/internal/services/message"
 	"github.com/zentra/peridotite/internal/services/notification"
@@ -124,6 +125,8 @@ func main() {
 	voiceHandler := voice.NewHandler(voiceService)
 	notificationHandler := notification.NewHandler(notificationService)
 	pluginHandler := plugin.NewHandler(pluginService)
+	githubStatsService := githubstats.NewService(cfg.GitHub.Token)
+	githubStatsHandler := githubstats.NewHandler(githubStatsService)
 
 	// Create router
 	r := chi.NewRouter()
@@ -162,6 +165,7 @@ func main() {
 		// Public routes
 		r.Mount("/auth", authHandler.Routes())
 		r.Mount("/communities", communityHandler.Routes(cfg.JWT.Secret))
+		r.Mount("/public/github", githubStatsHandler.Routes())
 
 		// Protected routes
 		r.Group(func(r chi.Router) {

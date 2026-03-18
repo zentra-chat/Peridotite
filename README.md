@@ -76,7 +76,10 @@ API_PORT=8080
 POSTGRES_PASSWORD=change-me
 JWT_SECRET=change-me
 ENCRYPTION_KEY=64_hex_chars_here
+GITHUB_TOKEN=optional_personal_access_token
 ```
+
+`GITHUB_TOKEN` is optional but recommended so the public GitHub stats endpoint (`/api/v1/public/github/stats`) has more API headroom.
 
 To remove containers and volumes:
 
