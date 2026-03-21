@@ -21,7 +21,7 @@ const (
 	pingPeriod = (pongWait * 9) / 10
 
 	// Maximum message size allowed from peer
-	maxMessageSize = 4096
+	maxMessageSize = 1024 * 1024
 )
 
 func NewClient(userID uuid.UUID, conn *websocket.Conn, hub *Hub) *Client {
@@ -385,9 +385,10 @@ func (c *Client) handleVoiceLeave(data json.RawMessage) {
 // handleVoiceStateUpdate handles mute/deafen state updates
 func (c *Client) handleVoiceStateUpdate(data json.RawMessage) {
 	var req struct {
-		ChannelID      string `json:"channelId"`
-		IsSelfMuted    *bool  `json:"isSelfMuted"`
-		IsSelfDeafened *bool  `json:"isSelfDeafened"`
+		ChannelID       string `json:"channelId"`
+		IsSelfMuted     *bool  `json:"isSelfMuted"`
+		IsSelfDeafened  *bool  `json:"isSelfDeafened"`
+		IsScreenSharing *bool  `json:"isScreenSharing"`
 	}
 	if err := json.Unmarshal(data, &req); err != nil {
 		return
@@ -402,7 +403,7 @@ func (c *Client) handleVoiceStateUpdate(data json.RawMessage) {
 		return
 	}
 
-	state, err := c.Hub.voiceService.UpdateVoiceState(context.Background(), channelID, c.UserID, req.IsSelfMuted, req.IsSelfDeafened)
+	state, err := c.Hub.voiceService.UpdateVoiceState(context.Background(), channelID, c.UserID, req.IsSelfMuted, req.IsSelfDeafened, req.IsScreenSharing)
 	if err != nil {
 		return
 	}

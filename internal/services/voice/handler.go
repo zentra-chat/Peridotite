@@ -138,15 +138,16 @@ func (h *Handler) UpdateVoiceState(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		IsSelfMuted    *bool `json:"isSelfMuted"`
-		IsSelfDeafened *bool `json:"isSelfDeafened"`
+		IsSelfMuted     *bool `json:"isSelfMuted"`
+		IsSelfDeafened  *bool `json:"isSelfDeafened"`
+		IsScreenSharing *bool `json:"isScreenSharing"`
 	}
 	if err := utils.DecodeJSON(r, &req); err != nil {
 		utils.RespondError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
-	state, err := h.service.UpdateVoiceState(r.Context(), channelID, userID, req.IsSelfMuted, req.IsSelfDeafened)
+	state, err := h.service.UpdateVoiceState(r.Context(), channelID, userID, req.IsSelfMuted, req.IsSelfDeafened, req.IsScreenSharing)
 	if err != nil {
 		if err == ErrNotInVoiceChannel {
 			utils.RespondError(w, http.StatusNotFound, "Not in this voice channel")

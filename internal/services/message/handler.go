@@ -76,7 +76,7 @@ func (h *Handler) CreateMessage(w http.ResponseWriter, r *http.Request) {
 		case ErrInsufficientPerms:
 			utils.RespondError(w, http.StatusForbidden, "Cannot send messages in this channel")
 		default:
-			utils.RespondError(w, http.StatusInternalServerError, "Failed to create message")
+			utils.RespondError(w, http.StatusInternalServerError, "Failed to create message: "+err.Error())
 		}
 		return
 	}
