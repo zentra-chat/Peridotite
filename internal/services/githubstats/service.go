@@ -17,7 +17,7 @@ const (
 )
 
 var trackedRepos = []string{
-	"zentra-chat/Selenite",
+	"zentra-chat/web",
 	"zentra-chat/desktop",
 	"zentra-chat/Peridotite",
 	"zentra-chat/plugin-template",
