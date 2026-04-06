@@ -30,6 +30,7 @@ import (
 	"github.com/zentra/peridotite/internal/services/plugin"
 	"github.com/zentra/peridotite/internal/services/user"
 	"github.com/zentra/peridotite/internal/services/voice"
+	"github.com/zentra/peridotite/internal/services/webhook"
 	"github.com/zentra/peridotite/internal/services/websocket"
 	"github.com/zentra/peridotite/pkg/database"
 	"github.com/zentra/peridotite/pkg/storage"
@@ -122,6 +123,7 @@ func main() {
 
 	// Initialize voice service
 	voiceService := voice.NewService(db, channelService, userService)
+	webhookService := webhook.NewService(db, redisClient, encKey, channelService)
 
 	// Initialize plugin service
 	pluginService := plugin.NewService(db, channelTypeRegistry)
@@ -147,6 +149,7 @@ func main() {
 	emojiHandler := emoji.NewHandler(emojiService)
 	wsHandler := websocket.NewHandler(wsHub, cfg.JWT.Secret)
 	voiceHandler := voice.NewHandler(voiceService)
+	webhookHandler := webhook.NewHandler(webhookService)
 	notificationHandler := notification.NewHandler(notificationService)
 	pluginHandler := plugin.NewHandler(pluginService)
 	githubStatsService := githubstats.NewService(cfg.GitHub.Token)
@@ -190,6 +193,7 @@ func main() {
 		r.Mount("/auth", authHandler.Routes())
 		r.Mount("/communities", communityHandler.Routes(cfg.JWT.Secret))
 		r.Mount("/public/github", githubStatsHandler.Routes())
+		r.Mount("/webhooks", webhookHandler.Routes(cfg.JWT.Secret))
 
 		// Protected routes
 		r.Group(func(r chi.Router) {
