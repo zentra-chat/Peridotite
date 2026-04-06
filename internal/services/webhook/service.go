@@ -582,13 +582,16 @@ func formatGitHubPayload(event string, payload map[string]any) (string, []models
 		return "", nil
 	}
 
-	repoName := nestedString(payload, "repository", "full_name")
-	repoURL := nestedString(payload, "repository", "html_url")
+	repo := asMap(payload["repository"])
+	repoName := firstString(repo, "full_name")
+	repoURL := firstString(repo, "html_url")
+	repoDescription := firstString(repo, "description")
 	sender := nestedString(payload, "sender", "login")
 	if sender == "" {
 		sender = "GitHub"
 	}
 	senderAvatar := nestedString(payload, "sender", "avatar_url")
+	action := strings.TrimSpace(strings.ToLower(firstString(payload, "action")))
 
 	event = strings.TrimSpace(strings.ToLower(event))
 	switch event {
@@ -643,13 +646,17 @@ func formatGitHubPayload(event string, payload map[string]any) (string, []models
 		}}
 	case "pull_request":
 		pr := asMap(payload["pull_request"])
-		action := firstString(payload, "action")
 		number := intFromAny(payload["number"])
 		prTitle := firstString(pr, "title")
 		prURL := firstNonEmpty(firstString(pr, "html_url"), repoURL, "https://github.com")
 		prBody := firstString(pr, "body")
+		merged := false
+		if mergedFlag, ok := pr["merged"].(bool); ok {
+			merged = mergedFlag
+		}
+		verb := githubPullRequestVerb(action, merged)
 
-		summary := fmt.Sprintf("%s %s pull request", sender, safeAction(action))
+		summary := fmt.Sprintf("%s %s pull request", sender, verb)
 		if number > 0 {
 			summary += fmt.Sprintf(" #%d", number)
 		}
@@ -671,19 +678,19 @@ func formatGitHubPayload(event string, payload map[string]any) (string, []models
 		return summary, []models.LinkPreview{{
 			URL:         prURL,
 			Title:       title,
-			Description: firstNonEmpty(prBody, "Pull request activity"),
+			Description: firstNonEmpty(prBody, fmt.Sprintf("Pull request %s", verb)),
 			SiteName:    "GitHub",
 			ImageURL:    senderAvatar,
 		}}
 	case "issues":
 		issue := asMap(payload["issue"])
-		action := firstString(payload, "action")
 		number := intFromAny(payload["number"])
 		issueTitle := firstString(issue, "title")
 		issueURL := firstNonEmpty(firstString(issue, "html_url"), repoURL, "https://github.com")
 		issueBody := firstString(issue, "body")
+		verb := githubIssueVerb(action)
 
-		summary := fmt.Sprintf("%s %s issue", sender, safeAction(action))
+		summary := fmt.Sprintf("%s %s issue", sender, verb)
 		if number > 0 {
 			summary += fmt.Sprintf(" #%d", number)
 		}
@@ -705,13 +712,255 @@ func formatGitHubPayload(event string, payload map[string]any) (string, []models
 		return summary, []models.LinkPreview{{
 			URL:         issueURL,
 			Title:       title,
-			Description: firstNonEmpty(issueBody, "Issue activity"),
+			Description: firstNonEmpty(issueBody, fmt.Sprintf("Issue %s", verb)),
+			SiteName:    "GitHub",
+			ImageURL:    senderAvatar,
+		}}
+	case "issue_comment":
+		issue := asMap(payload["issue"])
+		comment := asMap(payload["comment"])
+		number := intFromAny(issue["number"])
+		issueTitle := firstString(issue, "title")
+		issueURL := firstNonEmpty(firstString(issue, "html_url"), repoURL, "https://github.com")
+		commentBody := firstString(comment, "body")
+
+		verb := "commented on"
+		switch action {
+		case "edited":
+			verb = "edited a comment on"
+		case "deleted":
+			verb = "deleted a comment on"
+		}
+
+		summary := fmt.Sprintf("%s %s issue", sender, verb)
+		if number > 0 {
+			summary += fmt.Sprintf(" #%d", number)
+		}
+		if repoName != "" {
+			summary += fmt.Sprintf(" in %s", repoName)
+		}
+
+		title := issueTitle
+		if title == "" {
+			title = "Issue comment"
+		}
+		if number > 0 {
+			title = fmt.Sprintf("Issue #%d: %s", number, title)
+		}
+
+		return summary, []models.LinkPreview{{
+			URL:         issueURL,
+			Title:       title,
+			Description: firstNonEmpty(commentBody, "Issue comment activity"),
+			SiteName:    "GitHub",
+			ImageURL:    senderAvatar,
+		}}
+	case "pull_request_review":
+		pr := asMap(payload["pull_request"])
+		review := asMap(payload["review"])
+		number := intFromAny(payload["number"])
+		prTitle := firstString(pr, "title")
+		prURL := firstNonEmpty(firstString(pr, "html_url"), repoURL, "https://github.com")
+		reviewState := strings.TrimSpace(strings.ToLower(firstString(review, "state")))
+		reviewBody := firstString(review, "body")
+
+		reviewVerb := "reviewed"
+		switch reviewState {
+		case "approved":
+			reviewVerb = "approved"
+		case "changes_requested":
+			reviewVerb = "requested changes on"
+		}
+
+		summary := fmt.Sprintf("%s %s pull request", sender, reviewVerb)
+		if number > 0 {
+			summary += fmt.Sprintf(" #%d", number)
+		}
+		if repoName != "" {
+			summary += fmt.Sprintf(" in %s", repoName)
+		}
+		if prTitle != "" {
+			summary += fmt.Sprintf(": %s", prTitle)
+		}
+
+		title := prTitle
+		if title == "" {
+			title = "Pull request review"
+		}
+		if number > 0 {
+			title = fmt.Sprintf("PR #%d: %s", number, title)
+		}
+
+		description := firstNonEmpty(reviewBody, fmt.Sprintf("Review state: %s", firstNonEmpty(reviewState, "commented")))
+
+		return summary, []models.LinkPreview{{
+			URL:         prURL,
+			Title:       title,
+			Description: description,
+			SiteName:    "GitHub",
+			ImageURL:    senderAvatar,
+		}}
+	case "pull_request_review_comment":
+		pr := asMap(payload["pull_request"])
+		comment := asMap(payload["comment"])
+		number := intFromAny(payload["number"])
+		prTitle := firstString(pr, "title")
+		prURL := firstNonEmpty(firstString(pr, "html_url"), repoURL, "https://github.com")
+		commentBody := firstString(comment, "body")
+
+		verb := "commented on"
+		switch action {
+		case "edited":
+			verb = "edited a comment on"
+		case "deleted":
+			verb = "deleted a comment on"
+		}
+
+		summary := fmt.Sprintf("%s %s pull request", sender, verb)
+		if number > 0 {
+			summary += fmt.Sprintf(" #%d", number)
+		}
+		if repoName != "" {
+			summary += fmt.Sprintf(" in %s", repoName)
+		}
+
+		title := prTitle
+		if title == "" {
+			title = "Pull request comment"
+		}
+		if number > 0 {
+			title = fmt.Sprintf("PR #%d: %s", number, title)
+		}
+
+		return summary, []models.LinkPreview{{
+			URL:         prURL,
+			Title:       title,
+			Description: firstNonEmpty(commentBody, "Pull request comment activity"),
+			SiteName:    "GitHub",
+			ImageURL:    senderAvatar,
+		}}
+	case "star":
+		starVerb := "starred"
+		if action == "deleted" {
+			starVerb = "unstarred"
+		}
+
+		summary := fmt.Sprintf("%s %s %s", sender, starVerb, firstNonEmpty(repoName, "a repository"))
+		stars := intFromAny(repo["stargazers_count"])
+		description := firstNonEmpty(repoDescription, "Repository star activity")
+		if stars > 0 {
+			description = fmt.Sprintf("%d stars", stars)
+		}
+
+		return summary, []models.LinkPreview{{
+			URL:         firstNonEmpty(repoURL, "https://github.com"),
+			Title:       firstNonEmpty(repoName, "Repository stars"),
+			Description: description,
+			SiteName:    "GitHub",
+			ImageURL:    senderAvatar,
+		}}
+	case "watch":
+		watchVerb := "updated watch status for"
+		switch action {
+		case "started":
+			watchVerb = "started watching"
+		case "deleted", "stopped":
+			watchVerb = "stopped watching"
+		}
+
+		summary := fmt.Sprintf("%s %s %s", sender, watchVerb, firstNonEmpty(repoName, "a repository"))
+		watchers := intFromAny(repo["subscribers_count"])
+		description := firstNonEmpty(repoDescription, "Repository watch activity")
+		if watchers > 0 {
+			description = fmt.Sprintf("%d watchers", watchers)
+		}
+
+		return summary, []models.LinkPreview{{
+			URL:         firstNonEmpty(repoURL, "https://github.com"),
+			Title:       firstNonEmpty(repoName, "Repository watchers"),
+			Description: description,
+			SiteName:    "GitHub",
+			ImageURL:    senderAvatar,
+		}}
+	case "fork":
+		forkee := asMap(payload["forkee"])
+		forkName := firstString(forkee, "full_name")
+		forkURL := firstString(forkee, "html_url")
+		forkDescription := firstString(forkee, "description")
+
+		summary := fmt.Sprintf("%s forked %s", sender, firstNonEmpty(repoName, "a repository"))
+		if forkName != "" {
+			summary += fmt.Sprintf(" to %s", forkName)
+		}
+
+		title := firstNonEmpty(forkName, repoName, "Fork created")
+		description := firstNonEmpty(forkDescription, "Repository fork created")
+
+		return summary, []models.LinkPreview{{
+			URL:         firstNonEmpty(forkURL, repoURL, "https://github.com"),
+			Title:       title,
+			Description: description,
+			SiteName:    "GitHub",
+			ImageURL:    senderAvatar,
+		}}
+	case "create":
+		refType := firstNonEmpty(firstString(payload, "ref_type"), "resource")
+		refName := firstString(payload, "ref")
+
+		target := strings.TrimSpace(refType)
+		if refName != "" {
+			target += fmt.Sprintf(" %s", refName)
+		}
+		target = strings.TrimSpace(target)
+		if target == "" {
+			target = "resource"
+		}
+
+		summary := fmt.Sprintf("%s created %s", sender, target)
+		if repoName != "" {
+			summary += fmt.Sprintf(" in %s", repoName)
+		}
+
+		title := firstNonEmpty(repoName, "GitHub repository")
+		description := fmt.Sprintf("Created %s", target)
+
+		return summary, []models.LinkPreview{{
+			URL:         firstNonEmpty(repoURL, "https://github.com"),
+			Title:       title,
+			Description: description,
+			SiteName:    "GitHub",
+			ImageURL:    senderAvatar,
+		}}
+	case "delete":
+		refType := firstNonEmpty(firstString(payload, "ref_type"), "resource")
+		refName := firstString(payload, "ref")
+
+		target := strings.TrimSpace(refType)
+		if refName != "" {
+			target += fmt.Sprintf(" %s", refName)
+		}
+		target = strings.TrimSpace(target)
+		if target == "" {
+			target = "resource"
+		}
+
+		summary := fmt.Sprintf("%s deleted %s", sender, target)
+		if repoName != "" {
+			summary += fmt.Sprintf(" in %s", repoName)
+		}
+
+		title := firstNonEmpty(repoName, "GitHub repository")
+		description := fmt.Sprintf("Deleted %s", target)
+
+		return summary, []models.LinkPreview{{
+			URL:         firstNonEmpty(repoURL, "https://github.com"),
+			Title:       title,
+			Description: description,
 			SiteName:    "GitHub",
 			ImageURL:    senderAvatar,
 		}}
 	case "release":
 		release := asMap(payload["release"])
-		action := firstString(payload, "action")
 		tag := firstNonEmpty(firstString(release, "tag_name"), firstString(release, "name"))
 		releaseURL := firstNonEmpty(firstString(release, "html_url"), repoURL, "https://github.com")
 		releaseBody := firstString(release, "body")
@@ -735,34 +984,49 @@ func formatGitHubPayload(event string, payload map[string]any) (string, []models
 		}}
 	case "ping":
 		zen := firstString(payload, "zen")
-		summary := "GitHub webhook ping received"
-		if zen != "" {
-			summary = fmt.Sprintf("GitHub webhook ping: %s", zen)
+		summary := "GitHub webhook endpoint verified"
+		if repoName != "" {
+			summary = fmt.Sprintf("GitHub webhook verified for %s", repoName)
 		}
+
+		description := "Webhook endpoint successfully verified"
+		if zen != "" {
+			description = fmt.Sprintf("Ping response: %s", zen)
+		}
+
 		return summary, []models.LinkPreview{{
 			URL:         firstNonEmpty(repoURL, "https://github.com"),
-			Title:       firstNonEmpty(repoName, "GitHub"),
-			Description: firstNonEmpty(zen, "Webhook endpoint verified"),
+			Title:       firstNonEmpty(repoName, "GitHub webhook"),
+			Description: description,
 			SiteName:    "GitHub",
 			ImageURL:    senderAvatar,
 		}}
 	default:
-		summary := fmt.Sprintf("%s sent GitHub event", sender)
-		if event != "" {
-			summary += fmt.Sprintf(" %s", event)
+		eventLabel := strings.ReplaceAll(strings.TrimSpace(event), "_", " ")
+		if eventLabel == "" {
+			eventLabel = "event"
 		}
+
+		summary := fmt.Sprintf("%s triggered GitHub %s", sender, eventLabel)
 		if repoName != "" {
 			summary += fmt.Sprintf(" in %s", repoName)
 		}
 
+		detail := "GitHub webhook activity"
+		if action != "" {
+			detail = fmt.Sprintf("Action: %s", strings.ReplaceAll(action, "_", " "))
+		}
+
 		description := firstNonEmpty(
-			firstString(payload, "action"),
+			detail,
 			firstString(payload, "zen"),
 			summarizePayload(payload),
 		)
+
+		title := firstNonEmpty(repoName, fmt.Sprintf("GitHub %s", eventLabel))
 		return summary, []models.LinkPreview{{
 			URL:         firstNonEmpty(repoURL, "https://github.com"),
-			Title:       firstNonEmpty(repoName, "GitHub event"),
+			Title:       title,
 			Description: description,
 			SiteName:    "GitHub",
 			ImageURL:    senderAvatar,
@@ -1082,6 +1346,43 @@ func safeAction(action string) string {
 		return "updated"
 	}
 	return action
+}
+
+func githubPullRequestVerb(action string, merged bool) string {
+	action = strings.TrimSpace(strings.ToLower(action))
+	switch action {
+	case "opened":
+		return "opened"
+	case "closed":
+		if merged {
+			return "merged"
+		}
+		return "closed"
+	case "reopened":
+		return "reopened"
+	case "synchronize", "synchronized":
+		return "updated"
+	case "ready_for_review":
+		return "marked ready for review"
+	case "converted_to_draft":
+		return "converted to draft"
+	default:
+		return safeAction(action)
+	}
+}
+
+func githubIssueVerb(action string) string {
+	action = strings.TrimSpace(strings.ToLower(action))
+	switch action {
+	case "opened":
+		return "opened"
+	case "closed":
+		return "closed"
+	case "reopened":
+		return "reopened"
+	default:
+		return safeAction(action)
+	}
 }
 
 func firstString(source map[string]any, keys ...string) string {
