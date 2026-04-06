@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	"github.com/rs/zerolog/log"
 	"github.com/zentra/peridotite/internal/models"
 	"github.com/zentra/peridotite/pkg/auth"
 )
@@ -25,25 +27,46 @@ var (
 	ErrInvalid2FA         = errors.New("invalid 2FA code")
 	ErrUserNotFound       = errors.New("user not found")
 	ErrPortableProfileReq = errors.New("portable profile required")
+	ErrEmailNotVerified   = errors.New("email not verified")
+	ErrCaptchaRequired    = errors.New("captcha token required")
+	ErrCaptchaInvalid     = errors.New("captcha invalid")
+	ErrCaptchaUnavailable = errors.New("captcha verification unavailable")
+	ErrInvalidVerifyToken = errors.New("invalid email verification token")
+	ErrEmailNotConfigured = errors.New("email delivery is not configured")
+	ErrEmailSendFailed    = errors.New("failed to send verification email")
 )
 
 var portableUsernameRegex = regexp.MustCompile(`[^a-z0-9_]`)
 
 type Service struct {
-	db         *pgxpool.Pool
-	redis      *redis.Client
-	jwtSecret  string
-	accessTTL  time.Duration
-	refreshTTL time.Duration
+	db            *pgxpool.Pool
+	redis         *redis.Client
+	jwtSecret     string
+	accessTTL     time.Duration
+	refreshTTL    time.Duration
+	captchaConfig CaptchaConfig
+	emailConfig   EmailConfig
+	httpClient    *http.Client
 }
 
-func NewService(db *pgxpool.Pool, redis *redis.Client, jwtSecret string, accessTTL, refreshTTL time.Duration) *Service {
+func NewService(
+	db *pgxpool.Pool,
+	redis *redis.Client,
+	jwtSecret string,
+	accessTTL,
+	refreshTTL time.Duration,
+	captchaConfig CaptchaConfig,
+	emailConfig EmailConfig,
+) *Service {
 	return &Service{
-		db:         db,
-		redis:      redis,
-		jwtSecret:  jwtSecret,
-		accessTTL:  accessTTL,
-		refreshTTL: refreshTTL,
+		db:            db,
+		redis:         redis,
+		jwtSecret:     jwtSecret,
+		accessTTL:     accessTTL,
+		refreshTTL:    refreshTTL,
+		captchaConfig: captchaConfig,
+		emailConfig:   emailConfig,
+		httpClient:    &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
@@ -51,7 +74,23 @@ type RegisterRequest struct {
 	Username        string                  `json:"username" validate:"required,username"`
 	Email           string                  `json:"email" validate:"required,email"`
 	Password        string                  `json:"password" validate:"required,strongpassword"`
+	CaptchaToken    string                  `json:"captchaToken,omitempty"`
 	PortableProfile *PortableProfileRequest `json:"portableProfile,omitempty"`
+}
+
+type RegisterResponse struct {
+	RequiresEmailVerification bool   `json:"requiresEmailVerification"`
+	VerificationSent          bool   `json:"verificationSent"`
+	Email                     string `json:"email"`
+	Message                   string `json:"message"`
+}
+
+type VerifyEmailRequest struct {
+	Token string `json:"token" validate:"required,min=20"`
+}
+
+type ResendVerificationRequest struct {
+	Email string `json:"email" validate:"required,email"`
 }
 
 type LoginRequest struct {
@@ -117,7 +156,11 @@ type portableProfileRecord struct {
 	CustomStatus   *string
 }
 
-func (s *Service) Register(ctx context.Context, req *RegisterRequest) (*AuthResponse, error) {
+func (s *Service) Register(ctx context.Context, req *RegisterRequest, clientIP string) (*RegisterResponse, error) {
+	if err := s.validateCaptcha(ctx, req.CaptchaToken, clientIP); err != nil {
+		return nil, err
+	}
+
 	// Check if username or email already exists
 	var exists bool
 	err := s.db.QueryRow(ctx,
@@ -166,28 +209,28 @@ func (s *Service) Register(ctx context.Context, req *RegisterRequest) (*AuthResp
 		return nil, err
 	}
 
-	// Generate tokens
-	tokens, err := auth.GenerateTokenPair(user.ID, user.Username, s.jwtSecret, s.accessTTL)
+	_, err = s.reconcilePortableProfile(ctx, user, req.PortableProfile)
 	if err != nil {
 		return nil, err
 	}
 
-	// Store refresh token session
-	if err := s.createSession(ctx, user.ID, tokens.RefreshToken); err != nil {
-		return nil, err
+	verificationSent := false
+	message := "Account created successfully."
+	if s.emailConfig.VerificationRequired {
+		if err := s.sendEmailVerification(ctx, user); err == nil {
+			verificationSent = true
+			message = "Account created. Check your email to verify your account before logging in."
+		} else {
+			log.Warn().Err(err).Str("email", user.Email).Str("userID", user.ID.String()).Msg("failed to send signup verification email")
+			message = "Account created. Verification email could not be sent right now. Use resend verification from the verify page."
+		}
 	}
 
-	profileSync, err := s.reconcilePortableProfile(ctx, user, req.PortableProfile)
-	if err != nil {
-		return nil, err
-	}
-
-	return &AuthResponse{
-		User:         user,
-		AccessToken:  tokens.AccessToken,
-		RefreshToken: tokens.RefreshToken,
-		ExpiresAt:    tokens.ExpiresAt,
-		ProfileSync:  profileSync,
+	return &RegisterResponse{
+		RequiresEmailVerification: s.emailConfig.VerificationRequired,
+		VerificationSent:          verificationSent,
+		Email:                     user.Email,
+		Message:                   message,
 	}, nil
 }
 
@@ -215,6 +258,10 @@ func (s *Service) Login(ctx context.Context, req *LoginRequest) (*AuthResponse, 
 	// Verify password
 	if !auth.VerifyPassword(req.Password, user.PasswordHash) {
 		return nil, ErrInvalidCredentials
+	}
+
+	if s.emailConfig.VerificationRequired && !user.EmailVerified {
+		return nil, ErrEmailNotVerified
 	}
 
 	// Check 2FA if enabled

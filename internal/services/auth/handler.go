@@ -1,7 +1,9 @@
 package auth
 
 import (
+	"net"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/zentra/peridotite/internal/middleware"
@@ -23,6 +25,8 @@ func (h *Handler) Routes() chi.Router {
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.StrictRateLimitMiddleware(10)) // 10 requests per minute, I need to tune this later
 		r.Post("/register", h.Register)
+		r.Post("/verify-email", h.VerifyEmail)
+		r.Post("/resend-verification", h.ResendVerification)
 		r.Post("/login", h.Login)
 		r.Post("/portable", h.PortableAuth)
 		r.Post("/refresh", h.RefreshToken)
@@ -62,11 +66,17 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	resp, err := h.service.Register(r.Context(), &req)
+	resp, err := h.service.Register(r.Context(), &req, clientIPFromRequest(r))
 	if err != nil {
 		switch err {
 		case ErrUserExists:
 			utils.RespondErrorWithCode(w, http.StatusConflict, "USER_EXISTS", "Username or email already in use")
+		case ErrCaptchaRequired:
+			utils.RespondErrorWithCode(w, http.StatusBadRequest, "CAPTCHA_REQUIRED", "Captcha token is required")
+		case ErrCaptchaInvalid:
+			utils.RespondErrorWithCode(w, http.StatusBadRequest, "CAPTCHA_INVALID", "Captcha verification failed")
+		case ErrCaptchaUnavailable:
+			utils.RespondErrorWithCode(w, http.StatusServiceUnavailable, "CAPTCHA_UNAVAILABLE", "Captcha verification is currently unavailable")
 		default:
 			utils.RespondError(w, http.StatusInternalServerError, "Failed to register user")
 		}
@@ -100,6 +110,8 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		switch err {
 		case ErrInvalidCredentials:
 			utils.RespondErrorWithCode(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "Invalid username/email or password")
+		case ErrEmailNotVerified:
+			utils.RespondErrorWithCode(w, http.StatusForbidden, "EMAIL_NOT_VERIFIED", "Please verify your email before logging in")
 		case ErrInvalid2FA:
 			utils.RespondErrorWithCode(w, http.StatusUnauthorized, "INVALID_2FA", "Invalid 2FA code")
 		default:
@@ -109,6 +121,60 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.RespondSuccess(w, resp)
+}
+
+func (h *Handler) VerifyEmail(w http.ResponseWriter, r *http.Request) {
+	var req VerifyEmailRequest
+	if err := utils.DecodeJSON(r, &req); err != nil {
+		utils.RespondError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if err := utils.Validate(&req); err != nil {
+		utils.RespondValidationError(w, utils.FormatValidationErrors(err))
+		return
+	}
+
+	if err := h.service.VerifyEmail(r.Context(), req.Token); err != nil {
+		switch err {
+		case ErrInvalidVerifyToken:
+			utils.RespondErrorWithCode(w, http.StatusBadRequest, "INVALID_VERIFICATION_TOKEN", "Verification link is invalid or expired")
+		case ErrUserNotFound:
+			utils.RespondErrorWithCode(w, http.StatusBadRequest, "INVALID_VERIFICATION_TOKEN", "Verification link is invalid or expired")
+		default:
+			utils.RespondError(w, http.StatusInternalServerError, "Failed to verify email")
+		}
+		return
+	}
+
+	utils.RespondSuccess(w, map[string]string{"message": "Email verified successfully"})
+}
+
+func (h *Handler) ResendVerification(w http.ResponseWriter, r *http.Request) {
+	var req ResendVerificationRequest
+	if err := utils.DecodeJSON(r, &req); err != nil {
+		utils.RespondError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if err := utils.Validate(&req); err != nil {
+		utils.RespondValidationError(w, utils.FormatValidationErrors(err))
+		return
+	}
+
+	if err := h.service.ResendVerificationEmail(r.Context(), req.Email); err != nil {
+		switch err {
+		case ErrEmailNotConfigured:
+			utils.RespondErrorWithCode(w, http.StatusServiceUnavailable, "EMAIL_UNAVAILABLE", "Verification email delivery is not configured")
+		case ErrEmailSendFailed:
+			utils.RespondErrorWithCode(w, http.StatusServiceUnavailable, "EMAIL_SEND_FAILED", "Failed to send verification email")
+		default:
+			utils.RespondError(w, http.StatusInternalServerError, "Failed to resend verification email")
+		}
+		return
+	}
+
+	utils.RespondSuccess(w, map[string]string{"message": "If an unverified account exists for that email, a verification link has been sent."})
 }
 
 func (h *Handler) RefreshToken(w http.ResponseWriter, r *http.Request) {
@@ -306,4 +372,29 @@ func (h *Handler) Disable2FA(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.RespondJSON(w, http.StatusOK, map[string]string{"message": "2FA disabled successfully"})
+}
+
+func clientIPFromRequest(r *http.Request) string {
+	forwardedFor := strings.TrimSpace(r.Header.Get("X-Forwarded-For"))
+	if forwardedFor != "" {
+		parts := strings.Split(forwardedFor, ",")
+		if len(parts) > 0 {
+			ip := strings.TrimSpace(parts[0])
+			if ip != "" {
+				return ip
+			}
+		}
+	}
+
+	realIP := strings.TrimSpace(r.Header.Get("X-Real-IP"))
+	if realIP != "" {
+		return realIP
+	}
+
+	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
+	if err == nil {
+		return host
+	}
+
+	return strings.TrimSpace(r.RemoteAddr)
 }

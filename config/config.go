@@ -18,6 +18,21 @@ type Config struct {
 		RateLimitRPS   int
 		RateLimitBurst int
 	}
+	Captcha struct {
+		Enabled   bool
+		SecretKey string
+		VerifyURL string
+	}
+	Email struct {
+		VerificationRequired bool
+		SMTPHost             string
+		SMTPPort             int
+		SMTPUsername         string
+		SMTPPassword         string
+		FromAddress          string
+		VerificationURL      string
+		VerificationTokenTTL time.Duration
+	}
 	Database struct {
 		URL string
 	}
@@ -74,6 +89,21 @@ func Load() (*Config, error) {
 	})
 	cfg.Server.RateLimitRPS = getEnvInt("RATE_LIMIT_RPS", 50)
 	cfg.Server.RateLimitBurst = getEnvInt("RATE_LIMIT_BURST", 100)
+
+	// Captcha (Cloudflare Turnstile)
+	cfg.Captcha.SecretKey = strings.TrimSpace(getEnv("CAPTCHA_SECRET_KEY", ""))
+	cfg.Captcha.Enabled = getEnvBool("CAPTCHA_ENABLED", cfg.Captcha.SecretKey != "")
+	cfg.Captcha.VerifyURL = strings.TrimSpace(getEnv("CAPTCHA_VERIFY_URL", "https://challenges.cloudflare.com/turnstile/v0/siteverify"))
+
+	// Email verification
+	cfg.Email.VerificationRequired = getEnvBool("EMAIL_VERIFICATION_REQUIRED", true)
+	cfg.Email.SMTPHost = strings.TrimSpace(getEnv("EMAIL_SMTP_HOST", ""))
+	cfg.Email.SMTPPort = getEnvInt("EMAIL_SMTP_PORT", 587)
+	cfg.Email.SMTPUsername = strings.TrimSpace(getEnv("EMAIL_SMTP_USERNAME", ""))
+	cfg.Email.SMTPPassword = getEnv("EMAIL_SMTP_PASSWORD", "")
+	cfg.Email.FromAddress = strings.TrimSpace(getEnv("EMAIL_FROM_ADDRESS", "noreply@zentra.local"))
+	cfg.Email.VerificationURL = strings.TrimSpace(getEnv("EMAIL_VERIFICATION_URL", "http://localhost:5173/verify-email"))
+	cfg.Email.VerificationTokenTTL = getEnvDuration("EMAIL_VERIFICATION_TOKEN_TTL", 24*time.Hour)
 
 	// Database
 	postgresUser := getEnv("POSTGRES_USER", "zentra")

@@ -79,7 +79,28 @@ func main() {
 	}
 
 	// Initialize services
-	authService := auth.NewService(db, redisClient, cfg.JWT.Secret, cfg.JWT.AccessTTL, cfg.JWT.RefreshTTL)
+	authService := auth.NewService(
+		db,
+		redisClient,
+		cfg.JWT.Secret,
+		cfg.JWT.AccessTTL,
+		cfg.JWT.RefreshTTL,
+		auth.CaptchaConfig{
+			Enabled:   cfg.Captcha.Enabled,
+			SecretKey: cfg.Captcha.SecretKey,
+			VerifyURL: cfg.Captcha.VerifyURL,
+		},
+		auth.EmailConfig{
+			VerificationRequired: cfg.Email.VerificationRequired,
+			SMTPHost:             cfg.Email.SMTPHost,
+			SMTPPort:             cfg.Email.SMTPPort,
+			SMTPUsername:         cfg.Email.SMTPUsername,
+			SMTPPassword:         cfg.Email.SMTPPassword,
+			FromAddress:          cfg.Email.FromAddress,
+			VerificationURL:      cfg.Email.VerificationURL,
+			VerificationTokenTTL: cfg.Email.VerificationTokenTTL,
+		},
+	)
 	userService := user.NewService(db, redisClient)
 	communityService := community.NewService(db, redisClient, encKey)
 

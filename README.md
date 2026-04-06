@@ -77,6 +77,14 @@ POSTGRES_PASSWORD=change-me
 JWT_SECRET=change-me
 ENCRYPTION_KEY=64_hex_chars_here
 GITHUB_TOKEN=optional_personal_access_token
+CAPTCHA_ENABLED=true
+CAPTCHA_SECRET_KEY=turnstile_secret
+EMAIL_SMTP_HOST=smtp.example.com
+EMAIL_SMTP_PORT=587
+EMAIL_SMTP_USERNAME=mailer@example.com
+EMAIL_SMTP_PASSWORD=app_password
+EMAIL_FROM_ADDRESS=noreply@example.com
+EMAIL_VERIFICATION_URL=http://localhost:5173/verify-email
 ```
 
 `GITHUB_TOKEN` is optional but recommended so the public GitHub stats endpoint (`/api/v1/public/github/stats`) has more API headroom.
