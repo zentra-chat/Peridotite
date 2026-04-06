@@ -102,6 +102,9 @@ func main() {
 		},
 	)
 	userService := user.NewService(db, redisClient)
+	if err := userService.MarkAllUsersOffline(context.Background()); err != nil {
+		log.Warn().Err(err).Msg("Failed to reset stale presence states on startup")
+	}
 	communityService := community.NewService(db, redisClient, encKey)
 
 	// Set up the channel type registry and load definitions from the DB

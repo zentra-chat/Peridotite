@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
+	"github.com/zentra/peridotite/internal/models"
 	"github.com/zentra/peridotite/internal/services/channel"
 	"github.com/zentra/peridotite/internal/services/dm"
 	"github.com/zentra/peridotite/internal/services/user"
@@ -133,10 +135,9 @@ func (h *Hub) Run(ctx context.Context) {
 
 func (h *Hub) registerClient(client *Client) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	h.clients[client.ID] = client
 	h.userClients[client.UserID] = append(h.userClients[client.UserID], client)
+	h.mu.Unlock()
 
 	log.Info().
 		Str("clientId", client.ID.String()).
@@ -150,6 +151,7 @@ func (h *Hub) registerClient(client *Client) {
 func (h *Hub) unregisterClient(client *Client) {
 	// Collect voice leave broadcasts to send after releasing the lock
 	var voiceLeaveBroadcasts []*BroadcastMessage
+	shouldSetOffline := false
 
 	h.mu.Lock()
 
@@ -169,24 +171,7 @@ func (h *Hub) unregisterClient(client *Client) {
 		// If no more connections for this user, set offline and disconnect voice
 		if len(h.userClients[client.UserID]) == 0 {
 			delete(h.userClients, client.UserID)
-			h.setUserPresence(context.Background(), client.UserID, "offline")
-
-			// Disconnect from voice channels
-			if h.voiceService != nil {
-				channelIDs, _ := h.voiceService.DisconnectUser(context.Background(), client.UserID)
-				for _, channelID := range channelIDs {
-					voiceLeaveBroadcasts = append(voiceLeaveBroadcasts, &BroadcastMessage{
-						ChannelID: channelID.String(),
-						Event: &Event{
-							Type: EventTypeVoiceLeave,
-							Data: map[string]interface{}{
-								"channelId": channelID.String(),
-								"userId":    client.UserID.String(),
-							},
-						},
-					})
-				}
-			}
+			shouldSetOffline = true
 		}
 
 		// Remove from channel subscriptions
@@ -206,6 +191,27 @@ func (h *Hub) unregisterClient(client *Client) {
 	}
 
 	h.mu.Unlock()
+
+	if shouldSetOffline {
+		h.setUserPresence(context.Background(), client.UserID, "offline")
+
+		// Disconnect from voice channels
+		if h.voiceService != nil {
+			channelIDs, _ := h.voiceService.DisconnectUser(context.Background(), client.UserID)
+			for _, channelID := range channelIDs {
+				voiceLeaveBroadcasts = append(voiceLeaveBroadcasts, &BroadcastMessage{
+					ChannelID: channelID.String(),
+					Event: &Event{
+						Type: EventTypeVoiceLeave,
+						Data: map[string]interface{}{
+							"channelId": channelID.String(),
+							"userId":    client.UserID.String(),
+						},
+					},
+				})
+			}
+		}
+	}
 
 	// Send voice leave broadcasts now that the lock is released
 	for _, msg := range voiceLeaveBroadcasts {
@@ -430,31 +436,62 @@ func (h *Hub) subscribeToRedis(ctx context.Context) {
 
 // Presence management
 func (h *Hub) setUserPresence(ctx context.Context, userID uuid.UUID, status string) {
-	key := fmt.Sprintf("presence:%s", userID.String())
-	h.redis.Set(ctx, key, status, 5*time.Minute)
+	normalizedStatus, ok := normalizePresenceStatus(status)
+	if !ok {
+		return
+	}
 
-	// Publish presence update event
-	event := &Event{
+	if h.userService != nil {
+		if err := h.userService.UpdateStatus(ctx, userID, models.UserStatus(normalizedStatus)); err == nil {
+			return
+		}
+	}
+
+	// Fallback path keeps Redis + event behavior if user service update fails.
+	legacyKey := fmt.Sprintf("presence:%s", userID.String())
+	h.redis.Set(ctx, legacyKey, normalizedStatus, 5*time.Minute)
+	h.redis.Set(ctx, fmt.Sprintf("presence:user:%s", userID.String()), normalizedStatus, 0)
+
+	h.publishToRedis(ctx, "", &Event{
 		Type: EventTypePresenceUpdate,
 		Data: map[string]interface{}{
 			"userId": userID.String(),
-			"status": status,
+			"status": normalizedStatus,
 		},
-	}
-
-	// Broadcast to all channels the user is subscribed to
-	// This would need user's community/channel list
-	eventData, _ := json.Marshal(event)
-	h.redis.Publish(ctx, fmt.Sprintf("presence:%s", userID.String()), eventData)
+	})
 }
 
 func (h *Hub) GetUserPresence(ctx context.Context, userID uuid.UUID) string {
-	key := fmt.Sprintf("presence:%s", userID.String())
-	status, err := h.redis.Get(ctx, key).Result()
-	if err != nil {
-		return "offline"
+	status, err := h.redis.Get(ctx, fmt.Sprintf("presence:user:%s", userID.String())).Result()
+	if err == nil {
+		if normalized, ok := normalizePresenceStatus(status); ok {
+			return normalized
+		}
 	}
-	return status
+
+	status, err = h.redis.Get(ctx, fmt.Sprintf("presence:%s", userID.String())).Result()
+	if err == nil {
+		if normalized, ok := normalizePresenceStatus(status); ok {
+			return normalized
+		}
+	}
+
+	return "offline"
+}
+
+func normalizePresenceStatus(rawStatus string) (string, bool) {
+	status := strings.ToLower(strings.TrimSpace(rawStatus))
+
+	switch status {
+	case "online", "away", "busy", "invisible", "offline":
+		return status, true
+	case "idle":
+		return "away", true
+	case "dnd":
+		return "busy", true
+	default:
+		return "", false
+	}
 }
 
 // Typing indicators

@@ -237,18 +237,12 @@ func (c *Client) handlePresenceUpdate(data json.RawMessage) {
 		return
 	}
 
-	// Validate status
-	validStatuses := map[string]bool{
-		"online":  true,
-		"idle":    true,
-		"dnd":     true,
-		"offline": true,
-	}
-	if !validStatuses[req.Status] {
+	normalizedStatus, ok := normalizePresenceStatus(req.Status)
+	if !ok {
 		return
 	}
 
-	c.Hub.setUserPresence(context.Background(), c.UserID, req.Status)
+	c.Hub.setUserPresence(context.Background(), c.UserID, normalizedStatus)
 }
 
 // SendEvent sends an event directly to this client

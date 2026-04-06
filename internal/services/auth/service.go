@@ -186,7 +186,7 @@ func (s *Service) Register(ctx context.Context, req *RegisterRequest, clientIP s
 		Username:     req.Username,
 		Email:        req.Email,
 		PasswordHash: passwordHash,
-		Status:       models.UserStatusOnline,
+		Status:       models.UserStatusOffline,
 		CreatedAt:    time.Now(),
 		UpdatedAt:    time.Now(),
 	}
@@ -285,16 +285,14 @@ func (s *Service) Login(ctx context.Context, req *LoginRequest) (*AuthResponse, 
 		return nil, err
 	}
 
-	// Update last seen and status
+	// Update last seen. Presence state is driven by active WebSocket connections.
 	_, err = s.db.Exec(ctx,
-		`UPDATE users SET last_seen_at = NOW(), status = 'online' WHERE id = $1`,
+		`UPDATE users SET last_seen_at = NOW() WHERE id = $1`,
 		user.ID,
 	)
 	if err != nil {
 		return nil, err
 	}
-
-	user.Status = models.UserStatusOnline
 
 	profileSync, err := s.reconcilePortableProfile(ctx, user, req.PortableProfile)
 	if err != nil {
@@ -347,14 +345,12 @@ func (s *Service) PortableAuth(ctx context.Context, req *PortableAuthRequest) (*
 	}
 
 	_, err = s.db.Exec(ctx,
-		`UPDATE users SET last_seen_at = NOW(), status = 'online' WHERE id = $1`,
+		`UPDATE users SET last_seen_at = NOW() WHERE id = $1`,
 		user.ID,
 	)
 	if err != nil {
 		return nil, err
 	}
-
-	user.Status = models.UserStatusOnline
 
 	return &AuthResponse{
 		User:         user,
@@ -861,7 +857,7 @@ func (s *Service) createPortableUser(ctx context.Context, profile *portableProfi
 		AvatarURL:    profile.AvatarURL,
 		Bio:          profile.Bio,
 		CustomStatus: profile.CustomStatus,
-		Status:       models.UserStatusOnline,
+		Status:       models.UserStatusOffline,
 		CreatedAt:    time.Now(),
 		UpdatedAt:    time.Now(),
 	}

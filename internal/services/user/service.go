@@ -176,7 +176,11 @@ func (s *Service) RemoveAvatar(ctx context.Context, userID uuid.UUID) error {
 
 func (s *Service) UpdateStatus(ctx context.Context, userID uuid.UUID, status models.UserStatus) error {
 	_, err := s.db.Exec(ctx,
-		`UPDATE users SET status = $2, updated_at = NOW() WHERE id = $1`,
+		`UPDATE users
+		SET status = $2,
+			updated_at = NOW(),
+			last_seen_at = CASE WHEN $2 = 'offline' THEN NOW() ELSE last_seen_at END
+		WHERE id = $1`,
 		userID, status,
 	)
 	if err != nil {
@@ -194,6 +198,60 @@ func (s *Service) UpdateStatus(ctx context.Context, userID uuid.UUID, status mod
 
 	// Also update Redis presence
 	return database.SetUserPresence(ctx, userID.String(), string(status), 0)
+}
+
+// MarkAllUsersOffline clears stale online/away/busy/invisible states.
+// Startup can call this so presence is rebuilt from live websocket connections.
+func (s *Service) MarkAllUsersOffline(ctx context.Context) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE users
+		SET status = 'offline',
+			updated_at = NOW(),
+			last_seen_at = CASE WHEN status <> 'offline' THEN NOW() ELSE last_seen_at END
+		WHERE deleted_at IS NULL
+		  AND status <> 'offline'`,
+	)
+	if err != nil {
+		return err
+	}
+
+	if s.redis == nil {
+		return nil
+	}
+
+	if err := clearRedisKeysByPattern(ctx, s.redis, "presence:user:*"); err != nil {
+		log.Warn().Err(err).Msg("Failed to clear presence:user:* keys")
+	}
+
+	if err := clearRedisKeysByPattern(ctx, s.redis, "presence:????????-????-????-????-????????????"); err != nil {
+		log.Warn().Err(err).Msg("Failed to clear legacy presence:* keys")
+	}
+
+	return nil
+}
+
+func clearRedisKeysByPattern(ctx context.Context, client *redis.Client, pattern string) error {
+	var cursor uint64
+
+	for {
+		keys, nextCursor, err := client.Scan(ctx, cursor, pattern, 200).Result()
+		if err != nil {
+			return err
+		}
+
+		if len(keys) > 0 {
+			if err := client.Del(ctx, keys...).Err(); err != nil {
+				return err
+			}
+		}
+
+		cursor = nextCursor
+		if cursor == 0 {
+			break
+		}
+	}
+
+	return nil
 }
 
 func (s *Service) SearchUsers(ctx context.Context, query string, limit, offset int) ([]*models.PublicUser, int64, error) {
