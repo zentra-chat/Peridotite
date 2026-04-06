@@ -63,6 +63,32 @@ type UserBlock struct {
 	CreatedAt time.Time `json:"createdAt" db:"created_at"`
 }
 
+type FriendRequest struct {
+	User      *PublicUser `json:"user"`
+	CreatedAt time.Time   `json:"createdAt"`
+}
+
+type FriendRequests struct {
+	Incoming []*FriendRequest `json:"incoming"`
+	Outgoing []*FriendRequest `json:"outgoing"`
+}
+
+type UserRelationshipStatus string
+
+const (
+	UserRelationshipNone            UserRelationshipStatus = "none"
+	UserRelationshipFriends         UserRelationshipStatus = "friends"
+	UserRelationshipIncomingRequest UserRelationshipStatus = "incoming_request"
+	UserRelationshipOutgoingRequest UserRelationshipStatus = "outgoing_request"
+	UserRelationshipBlocked         UserRelationshipStatus = "blocked"
+	UserRelationshipBlockedBy       UserRelationshipStatus = "blocked_by"
+)
+
+type UserRelationship struct {
+	UserID uuid.UUID              `json:"userId"`
+	Status UserRelationshipStatus `json:"status"`
+}
+
 // PublicUser is a sanitized user for public API responses
 type PublicUser struct {
 	ID           uuid.UUID  `json:"id"`

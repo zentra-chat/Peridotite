@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -15,9 +16,19 @@ import (
 )
 
 var (
-	ErrUserNotFound   = errors.New("user not found")
-	ErrAlreadyBlocked = errors.New("user already blocked")
-	ErrNotBlocked     = errors.New("user not blocked")
+	ErrUserNotFound            = errors.New("user not found")
+	ErrAlreadyBlocked          = errors.New("user already blocked")
+	ErrNotBlocked              = errors.New("user not blocked")
+	ErrAlreadyFriends          = errors.New("users are already friends")
+	ErrFriendRequestExists     = errors.New("friend request already exists")
+	ErrIncomingFriendRequest   = errors.New("incoming friend request exists")
+	ErrFriendRequestNotFound   = errors.New("friend request not found")
+	ErrNotFriends              = errors.New("users are not friends")
+	ErrUsersBlocked            = errors.New("users are blocked")
+	ErrCannotFriendYourself    = errors.New("cannot add yourself as a friend")
+	ErrCannotAcceptOwnRequest  = errors.New("cannot accept your own friend request")
+	ErrCannotRemoveSelfRequest = errors.New("cannot remove a friend request to yourself")
+	ErrCannotRemoveSelfFriend  = errors.New("cannot remove yourself as a friend")
 )
 
 type Service struct {
@@ -321,6 +332,388 @@ func (s *Service) UpdateSettings(ctx context.Context, userID uuid.UUID, req *Upd
 	return s.GetSettings(ctx, userID)
 }
 
+func sortedFriendPair(first, second uuid.UUID) (uuid.UUID, uuid.UUID) {
+	if strings.Compare(first.String(), second.String()) < 0 {
+		return first, second
+	}
+	return second, first
+}
+
+func (s *Service) userExists(ctx context.Context, userID uuid.UUID) (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL)`,
+		userID,
+	).Scan(&exists)
+	return exists, err
+}
+
+func (s *Service) areFriends(ctx context.Context, userID, otherUserID uuid.UUID) (bool, error) {
+	first, second := sortedFriendPair(userID, otherUserID)
+
+	var exists bool
+	err := s.db.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM user_friendships WHERE user_id = $1 AND friend_id = $2)`,
+		first, second,
+	).Scan(&exists)
+	return exists, err
+}
+
+func (s *Service) hasFriendRequest(ctx context.Context, senderID, receiverID uuid.UUID) (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM friend_requests WHERE sender_id = $1 AND receiver_id = $2)`,
+		senderID, receiverID,
+	).Scan(&exists)
+	return exists, err
+}
+
+func (s *Service) notifyFriendStateUpdate(ctx context.Context, userIDs ...uuid.UUID) {
+	affected := make([]string, 0, len(userIDs))
+	seen := make(map[string]struct{}, len(userIDs))
+
+	for _, userID := range userIDs {
+		if userID == uuid.Nil {
+			continue
+		}
+		id := userID.String()
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		affected = append(affected, id)
+	}
+
+	if len(affected) == 0 {
+		return
+	}
+
+	s.broadcast(ctx, uuid.Nil, "FRIEND_STATE_UPDATE", map[string]interface{}{
+		"affectedUserIds": affected,
+	})
+}
+
+// Friend system
+
+func (s *Service) SendFriendRequest(ctx context.Context, senderID, receiverID uuid.UUID) error {
+	if senderID == receiverID {
+		return ErrCannotFriendYourself
+	}
+
+	exists, err := s.userExists(ctx, receiverID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return ErrUserNotFound
+	}
+
+	if blocked, err := s.IsBlocked(ctx, senderID, receiverID); err != nil {
+		return err
+	} else if blocked {
+		return ErrUsersBlocked
+	}
+
+	if blocked, err := s.IsBlocked(ctx, receiverID, senderID); err != nil {
+		return err
+	} else if blocked {
+		return ErrUsersBlocked
+	}
+
+	if friends, err := s.areFriends(ctx, senderID, receiverID); err != nil {
+		return err
+	} else if friends {
+		return ErrAlreadyFriends
+	}
+
+	if hasRequest, err := s.hasFriendRequest(ctx, senderID, receiverID); err != nil {
+		return err
+	} else if hasRequest {
+		return ErrFriendRequestExists
+	}
+
+	if hasRequest, err := s.hasFriendRequest(ctx, receiverID, senderID); err != nil {
+		return err
+	} else if hasRequest {
+		return ErrIncomingFriendRequest
+	}
+
+	result, err := s.db.Exec(ctx,
+		`INSERT INTO friend_requests (sender_id, receiver_id, created_at)
+		 VALUES ($1, $2, NOW())
+		 ON CONFLICT (sender_id, receiver_id) DO NOTHING`,
+		senderID, receiverID,
+	)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return ErrFriendRequestExists
+	}
+
+	s.notifyFriendStateUpdate(ctx, senderID, receiverID)
+	return nil
+}
+
+func (s *Service) AcceptFriendRequest(ctx context.Context, receiverID, senderID uuid.UUID) error {
+	if receiverID == senderID {
+		return ErrCannotAcceptOwnRequest
+	}
+
+	exists, err := s.userExists(ctx, senderID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return ErrUserNotFound
+	}
+
+	if blocked, err := s.IsBlocked(ctx, receiverID, senderID); err != nil {
+		return err
+	} else if blocked {
+		return ErrUsersBlocked
+	}
+
+	if blocked, err := s.IsBlocked(ctx, senderID, receiverID); err != nil {
+		return err
+	} else if blocked {
+		return ErrUsersBlocked
+	}
+
+	first, second := sortedFriendPair(receiverID, senderID)
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	result, err := tx.Exec(ctx,
+		`DELETE FROM friend_requests WHERE sender_id = $1 AND receiver_id = $2`,
+		senderID, receiverID,
+	)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return ErrFriendRequestNotFound
+	}
+
+	_, err = tx.Exec(ctx,
+		`INSERT INTO user_friendships (user_id, friend_id, created_at)
+		 VALUES ($1, $2, NOW())
+		 ON CONFLICT (user_id, friend_id) DO NOTHING`,
+		first, second,
+	)
+	if err != nil {
+		return err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	s.notifyFriendStateUpdate(ctx, receiverID, senderID)
+	return nil
+}
+
+func (s *Service) RemoveFriendRequest(ctx context.Context, userID, otherUserID uuid.UUID) error {
+	if userID == otherUserID {
+		return ErrCannotRemoveSelfRequest
+	}
+
+	exists, err := s.userExists(ctx, otherUserID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return ErrUserNotFound
+	}
+
+	result, err := s.db.Exec(ctx,
+		`DELETE FROM friend_requests
+		 WHERE (sender_id = $1 AND receiver_id = $2)
+		    OR (sender_id = $2 AND receiver_id = $1)`,
+		userID, otherUserID,
+	)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return ErrFriendRequestNotFound
+	}
+
+	s.notifyFriendStateUpdate(ctx, userID, otherUserID)
+	return nil
+}
+
+func (s *Service) GetFriendRequests(ctx context.Context, userID uuid.UUID) (*models.FriendRequests, error) {
+	requests := &models.FriendRequests{
+		Incoming: make([]*models.FriendRequest, 0),
+		Outgoing: make([]*models.FriendRequest, 0),
+	}
+
+	incomingRows, err := s.db.Query(ctx,
+		`SELECT fr.created_at, u.id, u.username, u.display_name, u.avatar_url, u.bio, u.status, u.custom_status, u.created_at
+		 FROM friend_requests fr
+		 JOIN users u ON u.id = fr.sender_id
+		 WHERE fr.receiver_id = $1 AND u.deleted_at IS NULL
+		 ORDER BY fr.created_at DESC`,
+		userID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer incomingRows.Close()
+
+	for incomingRows.Next() {
+		friendUser := &models.PublicUser{}
+		request := &models.FriendRequest{User: friendUser}
+		if err := incomingRows.Scan(
+			&request.CreatedAt,
+			&friendUser.ID, &friendUser.Username, &friendUser.DisplayName, &friendUser.AvatarURL,
+			&friendUser.Bio, &friendUser.Status, &friendUser.CustomStatus, &friendUser.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		requests.Incoming = append(requests.Incoming, request)
+	}
+
+	outgoingRows, err := s.db.Query(ctx,
+		`SELECT fr.created_at, u.id, u.username, u.display_name, u.avatar_url, u.bio, u.status, u.custom_status, u.created_at
+		 FROM friend_requests fr
+		 JOIN users u ON u.id = fr.receiver_id
+		 WHERE fr.sender_id = $1 AND u.deleted_at IS NULL
+		 ORDER BY fr.created_at DESC`,
+		userID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer outgoingRows.Close()
+
+	for outgoingRows.Next() {
+		friendUser := &models.PublicUser{}
+		request := &models.FriendRequest{User: friendUser}
+		if err := outgoingRows.Scan(
+			&request.CreatedAt,
+			&friendUser.ID, &friendUser.Username, &friendUser.DisplayName, &friendUser.AvatarURL,
+			&friendUser.Bio, &friendUser.Status, &friendUser.CustomStatus, &friendUser.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		requests.Outgoing = append(requests.Outgoing, request)
+	}
+
+	return requests, nil
+}
+
+func (s *Service) GetFriends(ctx context.Context, userID uuid.UUID) ([]*models.PublicUser, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT u.id, u.username, u.display_name, u.avatar_url, u.bio, u.status, u.custom_status, u.created_at
+		 FROM user_friendships f
+		 JOIN users u ON u.id = CASE WHEN f.user_id = $1 THEN f.friend_id ELSE f.user_id END
+		 WHERE (f.user_id = $1 OR f.friend_id = $1)
+		   AND u.deleted_at IS NULL
+		 ORDER BY COALESCE(u.display_name, u.username), u.username`,
+		userID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	friends := make([]*models.PublicUser, 0)
+	for rows.Next() {
+		friendUser := &models.PublicUser{}
+		if err := rows.Scan(
+			&friendUser.ID, &friendUser.Username, &friendUser.DisplayName, &friendUser.AvatarURL,
+			&friendUser.Bio, &friendUser.Status, &friendUser.CustomStatus, &friendUser.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		friends = append(friends, friendUser)
+	}
+
+	return friends, nil
+}
+
+func (s *Service) RemoveFriend(ctx context.Context, userID, friendID uuid.UUID) error {
+	if userID == friendID {
+		return ErrCannotRemoveSelfFriend
+	}
+
+	exists, err := s.userExists(ctx, friendID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return ErrUserNotFound
+	}
+
+	first, second := sortedFriendPair(userID, friendID)
+
+	result, err := s.db.Exec(ctx,
+		`DELETE FROM user_friendships WHERE user_id = $1 AND friend_id = $2`,
+		first, second,
+	)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return ErrNotFriends
+	}
+
+	s.notifyFriendStateUpdate(ctx, userID, friendID)
+	return nil
+}
+
+func (s *Service) GetRelationship(ctx context.Context, userID, otherUserID uuid.UUID) (*models.UserRelationship, error) {
+	if userID == otherUserID {
+		return &models.UserRelationship{UserID: otherUserID, Status: models.UserRelationshipNone}, nil
+	}
+
+	exists, err := s.userExists(ctx, otherUserID)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, ErrUserNotFound
+	}
+
+	if blocked, err := s.IsBlocked(ctx, userID, otherUserID); err != nil {
+		return nil, err
+	} else if blocked {
+		return &models.UserRelationship{UserID: otherUserID, Status: models.UserRelationshipBlocked}, nil
+	}
+
+	if blocked, err := s.IsBlocked(ctx, otherUserID, userID); err != nil {
+		return nil, err
+	} else if blocked {
+		return &models.UserRelationship{UserID: otherUserID, Status: models.UserRelationshipBlockedBy}, nil
+	}
+
+	if friends, err := s.areFriends(ctx, userID, otherUserID); err != nil {
+		return nil, err
+	} else if friends {
+		return &models.UserRelationship{UserID: otherUserID, Status: models.UserRelationshipFriends}, nil
+	}
+
+	if hasRequest, err := s.hasFriendRequest(ctx, userID, otherUserID); err != nil {
+		return nil, err
+	} else if hasRequest {
+		return &models.UserRelationship{UserID: otherUserID, Status: models.UserRelationshipOutgoingRequest}, nil
+	}
+
+	if hasRequest, err := s.hasFriendRequest(ctx, otherUserID, userID); err != nil {
+		return nil, err
+	} else if hasRequest {
+		return &models.UserRelationship{UserID: otherUserID, Status: models.UserRelationshipIncomingRequest}, nil
+	}
+
+	return &models.UserRelationship{UserID: otherUserID, Status: models.UserRelationshipNone}, nil
+}
+
 // Blocking
 
 func (s *Service) BlockUser(ctx context.Context, blockerID, blockedID uuid.UUID) error {
@@ -328,12 +721,55 @@ func (s *Service) BlockUser(ctx context.Context, blockerID, blockedID uuid.UUID)
 		return errors.New("cannot block yourself")
 	}
 
-	_, err := s.db.Exec(ctx,
+	exists, err := s.userExists(ctx, blockedID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return ErrUserNotFound
+	}
+
+	first, second := sortedFriendPair(blockerID, blockedID)
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx,
 		`INSERT INTO user_blocks (blocker_id, blocked_id) VALUES ($1, $2)
 		ON CONFLICT (blocker_id, blocked_id) DO NOTHING`,
 		blockerID, blockedID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.Exec(ctx,
+		`DELETE FROM user_friendships WHERE user_id = $1 AND friend_id = $2`,
+		first, second,
+	)
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.Exec(ctx,
+		`DELETE FROM friend_requests
+		 WHERE (sender_id = $1 AND receiver_id = $2)
+		    OR (sender_id = $2 AND receiver_id = $1)`,
+		blockerID, blockedID,
+	)
+	if err != nil {
+		return err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	s.notifyFriendStateUpdate(ctx, blockerID, blockedID)
+	return nil
 }
 
 func (s *Service) UnblockUser(ctx context.Context, blockerID, blockedID uuid.UUID) error {
