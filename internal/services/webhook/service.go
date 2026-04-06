@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"sort"
@@ -23,6 +24,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 	"github.com/zentra/peridotite/internal/models"
+	"github.com/zentra/peridotite/internal/services/media"
 	"github.com/zentra/peridotite/internal/services/message"
 	"github.com/zentra/peridotite/internal/services/messaging"
 	"github.com/zentra/peridotite/pkg/auth"
@@ -38,10 +40,16 @@ var (
 	ErrInvalidWebhookToken      = errors.New("invalid webhook token")
 	ErrWebhookInsufficientPerms = errors.New("insufficient permissions")
 	ErrChannelNotFound          = errors.New("channel not found")
+	ErrWebhookAvatarTooLarge    = errors.New("webhook avatar too large")
+	ErrInvalidWebhookAvatar     = errors.New("invalid webhook avatar")
 )
 
 type ChannelServiceInterface interface {
 	CanManageWebhooks(ctx context.Context, channelID, userID uuid.UUID) bool
+}
+
+type AvatarUploader interface {
+	UploadAvatar(ctx context.Context, ownerID uuid.UUID, ownerType string, file multipart.File, header *multipart.FileHeader) (string, error)
 }
 
 type Service struct {
@@ -49,6 +57,7 @@ type Service struct {
 	redis          *redis.Client
 	cipher         messaging.ContentCipher
 	channelService ChannelServiceInterface
+	avatarUploader AvatarUploader
 }
 
 type CreateWebhookRequest struct {
@@ -64,12 +73,13 @@ type UpdateWebhookRequest struct {
 	IsActive     *bool   `json:"isActive"`
 }
 
-func NewService(db *pgxpool.Pool, redisClient *redis.Client, encryptionKey []byte, channelService ChannelServiceInterface) *Service {
+func NewService(db *pgxpool.Pool, redisClient *redis.Client, encryptionKey []byte, channelService ChannelServiceInterface, avatarUploader AvatarUploader) *Service {
 	return &Service{
 		db:             db,
 		redis:          redisClient,
 		cipher:         messaging.NewChannelCipher(encryptionKey),
 		channelService: channelService,
+		avatarUploader: avatarUploader,
 	}
 }
 
@@ -141,6 +151,30 @@ func (s *Service) CreateWebhook(ctx context.Context, channelID, userID uuid.UUID
 	}
 
 	return webhook, token, nil
+}
+
+func (s *Service) UploadWebhookAvatar(ctx context.Context, channelID, userID uuid.UUID, file multipart.File, header *multipart.FileHeader) (string, error) {
+	if !s.channelService.CanManageWebhooks(ctx, channelID, userID) {
+		return "", ErrWebhookInsufficientPerms
+	}
+
+	if s.avatarUploader == nil {
+		return "", fmt.Errorf("avatar uploader unavailable")
+	}
+
+	url, err := s.avatarUploader.UploadAvatar(ctx, uuid.New(), "webhooks", file, header)
+	if err != nil {
+		switch {
+		case errors.Is(err, media.ErrFileTooLarge):
+			return "", ErrWebhookAvatarTooLarge
+		case errors.Is(err, media.ErrInvalidFileType):
+			return "", ErrInvalidWebhookAvatar
+		default:
+			return "", fmt.Errorf("upload webhook avatar: %w", err)
+		}
+	}
+
+	return url, nil
 }
 
 func (s *Service) ListChannelWebhooks(ctx context.Context, channelID, userID uuid.UUID) ([]*models.Webhook, error) {

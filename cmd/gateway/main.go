@@ -123,7 +123,7 @@ func main() {
 
 	// Initialize voice service
 	voiceService := voice.NewService(db, channelService, userService)
-	webhookService := webhook.NewService(db, redisClient, encKey, channelService)
+	webhookService := webhook.NewService(db, redisClient, encKey, channelService, mediaService)
 
 	// Initialize plugin service
 	pluginService := plugin.NewService(db, channelTypeRegistry)
