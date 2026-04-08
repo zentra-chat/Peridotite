@@ -188,6 +188,8 @@ func (h *Handler) UpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, ErrWebhookInsufficientPerms):
 			utils.RespondError(w, http.StatusForbidden, "Cannot manage this webhook")
+		case errors.Is(err, ErrChannelNotFound):
+			utils.RespondError(w, http.StatusNotFound, "Target channel not found")
 		case errors.Is(err, ErrWebhookNotFound):
 			utils.RespondError(w, http.StatusNotFound, "Webhook not found")
 		default:

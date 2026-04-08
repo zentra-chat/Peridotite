@@ -70,6 +70,7 @@ type UpdateWebhookRequest struct {
 	Name         *string `json:"name"`
 	AvatarURL    *string `json:"avatarUrl"`
 	ProviderHint *string `json:"providerHint"`
+	ChannelID    *string `json:"channelId"`
 	IsActive     *bool   `json:"isActive"`
 }
 
@@ -220,10 +221,38 @@ func (s *Service) UpdateWebhook(ctx context.Context, webhookID, userID uuid.UUID
 		return nil, ErrWebhookInsufficientPerms
 	}
 
+	channelID := webhook.ChannelID
 	name := webhook.Name
 	avatarURL := webhook.AvatarURL
 	providerHint := webhook.ProviderHint
 	isActive := webhook.IsActive
+	communityID := webhook.CommunityID
+
+	if req.ChannelID != nil {
+		nextChannelID, parseErr := uuid.Parse(strings.TrimSpace(*req.ChannelID))
+		if parseErr != nil {
+			return nil, ErrChannelNotFound
+		}
+
+		nextCommunityID, communityErr := s.getChannelCommunityID(ctx, nextChannelID)
+		if communityErr != nil {
+			if errors.Is(communityErr, ErrChannelNotFound) {
+				return nil, ErrChannelNotFound
+			}
+			return nil, communityErr
+		}
+
+		if nextCommunityID != webhook.CommunityID {
+			return nil, ErrChannelNotFound
+		}
+
+		if nextChannelID != webhook.ChannelID && !s.channelService.CanManageWebhooks(ctx, nextChannelID, userID) {
+			return nil, ErrWebhookInsufficientPerms
+		}
+
+		channelID = nextChannelID
+		communityID = nextCommunityID
+	}
 
 	if req.Name != nil {
 		name = sanitizeWebhookName(*req.Name)
@@ -241,9 +270,9 @@ func (s *Service) UpdateWebhook(ctx context.Context, webhookID, userID uuid.UUID
 	now := time.Now()
 	_, err = s.db.Exec(ctx,
 		`UPDATE webhooks
-		 SET name = $2, avatar_url = $3, provider_hint = $4, is_active = $5, updated_at = $6
+		 SET channel_id = $2, community_id = $3, name = $4, avatar_url = $5, provider_hint = $6, is_active = $7, updated_at = $8
 		 WHERE id = $1`,
-		webhookID, name, avatarURL, providerHint, isActive, now,
+		webhookID, channelID, communityID, name, avatarURL, providerHint, isActive, now,
 	)
 	if err != nil {
 		return nil, err
