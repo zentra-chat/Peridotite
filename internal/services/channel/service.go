@@ -359,7 +359,6 @@ func (s *Service) DeleteCategory(ctx context.Context, categoryID, userID uuid.UU
 		return err
 	}
 
-	// Remove category from channels (don't delete channels)
 	_, err = s.db.Exec(ctx,
 		`UPDATE channels SET category_id = NULL WHERE category_id = $1`,
 		categoryID,
@@ -372,8 +371,26 @@ func (s *Service) DeleteCategory(ctx context.Context, categoryID, userID uuid.UU
 	return err
 }
 
-// Channel Permissions
+func (s *Service) ReorderCategories(ctx context.Context, communityID, userID uuid.UUID, categoryIDs []uuid.UUID) error {
+	if err := s.requireChannelPermission(ctx, communityID, userID, models.PermissionManageChannels); err != nil {
+		return err
+	}
 
+	return database.WithTransaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		for i, categoryID := range categoryIDs {
+			_, err := tx.Exec(ctx,
+				`UPDATE channel_categories SET position = $2 WHERE id = $1 AND community_id = $3`,
+				categoryID, i, communityID,
+			)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// Channel Permissions
 func (s *Service) GetChannelPermissions(ctx context.Context, channelID, userID uuid.UUID) ([]*models.ChannelPermission, error) {
 	channel, err := s.GetChannel(ctx, channelID)
 	if err != nil {

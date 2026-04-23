@@ -35,6 +35,7 @@ func (h *Handler) Routes() chi.Router {
 	r.Route("/communities/{communityId}/categories", func(r chi.Router) {
 		r.Get("/", h.GetCategories)
 		r.Post("/", h.CreateCategory)
+		r.Put("/reorder", h.ReorderCategories)
 	})
 
 	// Channel-specific routes
@@ -385,6 +386,40 @@ func (h *Handler) DeleteCategory(w http.ResponseWriter, r *http.Request) {
 			utils.RespondError(w, http.StatusForbidden, "Insufficient permissions")
 		default:
 			utils.RespondError(w, http.StatusInternalServerError, "Failed to delete category")
+		}
+		return
+	}
+
+	utils.RespondNoContent(w)
+}
+
+func (h *Handler) ReorderCategories(w http.ResponseWriter, r *http.Request) {
+	userID, err := middleware.RequireAuth(r.Context())
+	if err != nil {
+		utils.RespondError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	communityID, err := uuid.Parse(chi.URLParam(r, "communityId"))
+	if err != nil {
+		utils.RespondError(w, http.StatusBadRequest, "Invalid community ID")
+		return
+	}
+
+	var req struct {
+		CategoryIDs []uuid.UUID `json:"categoryIds" validate:"required,min=1"`
+	}
+	if err := utils.DecodeJSON(r, &req); err != nil {
+		utils.RespondError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if err := h.service.ReorderCategories(r.Context(), communityID, userID, req.CategoryIDs); err != nil {
+		switch err {
+		case ErrInsufficientPerms:
+			utils.RespondError(w, http.StatusForbidden, "Insufficient permissions")
+		default:
+			utils.RespondError(w, http.StatusInternalServerError, "Failed to reorder categories")
 		}
 		return
 	}
