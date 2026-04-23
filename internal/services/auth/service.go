@@ -215,8 +215,9 @@ func (s *Service) Register(ctx context.Context, req *RegisterRequest, clientIP s
 	}
 
 	verificationSent := false
+	requiresEmailVerification := s.emailVerificationEnabled()
 	message := "Account created successfully."
-	if s.emailConfig.VerificationRequired {
+	if requiresEmailVerification {
 		if err := s.sendEmailVerification(ctx, user); err == nil {
 			verificationSent = true
 			message = "Account created. Check your email to verify your account before logging in."
@@ -227,7 +228,7 @@ func (s *Service) Register(ctx context.Context, req *RegisterRequest, clientIP s
 	}
 
 	return &RegisterResponse{
-		RequiresEmailVerification: s.emailConfig.VerificationRequired,
+		RequiresEmailVerification: requiresEmailVerification,
 		VerificationSent:          verificationSent,
 		Email:                     user.Email,
 		Message:                   message,
@@ -260,7 +261,7 @@ func (s *Service) Login(ctx context.Context, req *LoginRequest) (*AuthResponse, 
 		return nil, ErrInvalidCredentials
 	}
 
-	if s.emailConfig.VerificationRequired && !user.EmailVerified {
+	if s.emailVerificationEnabled() && !user.EmailVerified {
 		return nil, ErrEmailNotVerified
 	}
 

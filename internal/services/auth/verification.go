@@ -42,13 +42,25 @@ type EmailConfig struct {
 	VerificationTokenTTL time.Duration
 }
 
-func (s *Service) validateCaptcha(ctx context.Context, token, clientIP string) error {
+func (s *Service) captchaEnabled() bool {
 	if !s.captchaConfig.Enabled {
-		return nil
+		return false
 	}
 
-	if strings.TrimSpace(s.captchaConfig.SecretKey) == "" || strings.TrimSpace(s.captchaConfig.VerifyURL) == "" {
-		return ErrCaptchaUnavailable
+	return strings.TrimSpace(s.captchaConfig.SecretKey) != "" && strings.TrimSpace(s.captchaConfig.VerifyURL) != ""
+}
+
+func (s *Service) emailVerificationEnabled() bool {
+	if !s.emailConfig.VerificationRequired {
+		return false
+	}
+
+	return s.ensureEmailConfig() == nil
+}
+
+func (s *Service) validateCaptcha(ctx context.Context, token, clientIP string) error {
+	if !s.captchaEnabled() {
+		return nil
 	}
 
 	token = strings.TrimSpace(token)
@@ -95,7 +107,7 @@ func (s *Service) validateCaptcha(ctx context.Context, token, clientIP string) e
 }
 
 func (s *Service) sendEmailVerification(ctx context.Context, user *models.User) error {
-	if !s.emailConfig.VerificationRequired {
+	if !s.emailVerificationEnabled() {
 		return nil
 	}
 
@@ -159,7 +171,7 @@ func (s *Service) VerifyEmail(ctx context.Context, token string) error {
 }
 
 func (s *Service) ResendVerificationEmail(ctx context.Context, email string) error {
-	if !s.emailConfig.VerificationRequired {
+	if !s.emailVerificationEnabled() {
 		return nil
 	}
 
