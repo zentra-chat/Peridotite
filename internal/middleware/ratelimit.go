@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/zentra/peridotite/internal/utils"
 	"github.com/zentra/peridotite/pkg/database"
 )
 
@@ -37,7 +38,7 @@ func RateLimitMiddleware(redisClient *redis.Client, rps int) func(http.Handler) 
 				w.Header().Set("X-RateLimit-Limit", fmt.Sprintf("%d", rps))
 				w.Header().Set("X-RateLimit-Remaining", "0")
 				w.Header().Set("Retry-After", "1")
-				http.Error(w, `{"error":"Rate limit exceeded"}`, http.StatusTooManyRequests)
+				utils.RespondErrorWithCode(w, http.StatusTooManyRequests, "RATE_LIMIT_EXCEEDED", "Rate limit exceeded")
 				return
 			}
 
@@ -69,7 +70,7 @@ func StrictRateLimitMiddleware(rps int) func(http.Handler) http.Handler {
 
 			if count > int64(rps) {
 				w.Header().Set("Retry-After", "60")
-				http.Error(w, `{"error":"Too many requests, please try again later"}`, http.StatusTooManyRequests)
+				utils.RespondErrorWithCode(w, http.StatusTooManyRequests, "RATE_LIMIT_EXCEEDED", "Too many requests, please try again later")
 				return
 			}
 
@@ -124,7 +125,7 @@ func TimeoutMiddleware(timeout time.Duration) func(http.Handler) http.Handler {
 				return
 			case <-ctx.Done():
 				if ctx.Err() == context.DeadlineExceeded {
-					http.Error(w, `{"error":"Request timeout"}`, http.StatusGatewayTimeout)
+					utils.RespondErrorWithCode(w, http.StatusGatewayTimeout, "REQUEST_TIMEOUT", "Request timeout")
 				}
 			}
 		})

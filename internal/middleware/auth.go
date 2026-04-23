@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/zentra/peridotite/internal/utils"
 	"github.com/zentra/peridotite/pkg/auth"
 )
 
@@ -22,13 +23,13 @@ func AuthMiddleware(secret string) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			authHeader := r.Header.Get("Authorization")
 			if authHeader == "" {
-				http.Error(w, `{"error":"Authorization header required"}`, http.StatusUnauthorized)
+				utils.RespondErrorWithCode(w, http.StatusUnauthorized, "AUTH_HEADER_REQUIRED", "Authorization header required")
 				return
 			}
 
 			parts := strings.SplitN(authHeader, " ", 2)
 			if len(parts) != 2 || parts[0] != "Bearer" {
-				http.Error(w, `{"error":"Invalid authorization header format"}`, http.StatusUnauthorized)
+				utils.RespondErrorWithCode(w, http.StatusUnauthorized, "INVALID_AUTH_HEADER", "Invalid authorization header format")
 				return
 			}
 
@@ -36,16 +37,16 @@ func AuthMiddleware(secret string) func(http.Handler) http.Handler {
 			if err != nil {
 				switch err {
 				case auth.ErrExpiredToken:
-					http.Error(w, `{"error":"Token expired"}`, http.StatusUnauthorized)
+					utils.RespondErrorWithCode(w, http.StatusUnauthorized, "TOKEN_EXPIRED", "Token expired")
 				default:
-					http.Error(w, `{"error":"Invalid token"}`, http.StatusUnauthorized)
+					utils.RespondErrorWithCode(w, http.StatusUnauthorized, "INVALID_TOKEN", "Invalid token")
 				}
 				return
 			}
 
 			userID, err := uuid.Parse(claims.UserID)
 			if err != nil {
-				http.Error(w, `{"error":"Invalid user ID in token"}`, http.StatusUnauthorized)
+				utils.RespondErrorWithCode(w, http.StatusUnauthorized, "INVALID_TOKEN_USER_ID", "Invalid user ID in token")
 				return
 			}
 

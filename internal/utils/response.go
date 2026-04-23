@@ -8,7 +8,7 @@ import (
 
 type ErrorResponse struct {
 	Error   string `json:"error"`
-	Code    string `json:"code,omitempty"`
+	Code    string `json:"code"`
 	Details any    `json:"details,omitempty"`
 }
 
@@ -36,12 +36,49 @@ func RespondJSON(w http.ResponseWriter, status int, data any) {
 
 // RespondError writes an error response
 func RespondError(w http.ResponseWriter, status int, message string) {
-	RespondJSON(w, status, ErrorResponse{Error: message})
+	RespondJSON(w, status, ErrorResponse{Error: message, Code: DefaultErrorCode(status)})
 }
 
 // RespondErrorWithCode writes an error response with an error code
 func RespondErrorWithCode(w http.ResponseWriter, status int, code, message string) {
+	if code == "" {
+		code = DefaultErrorCode(status)
+	}
 	RespondJSON(w, status, ErrorResponse{Error: message, Code: code})
+}
+
+// DefaultErrorCode maps HTTP status codes to stable API error codes.
+func DefaultErrorCode(status int) string {
+	switch status {
+	case http.StatusBadRequest:
+		return "BAD_REQUEST"
+	case http.StatusUnauthorized:
+		return "UNAUTHORIZED"
+	case http.StatusForbidden:
+		return "FORBIDDEN"
+	case http.StatusNotFound:
+		return "NOT_FOUND"
+	case http.StatusConflict:
+		return "CONFLICT"
+	case http.StatusUnprocessableEntity:
+		return "UNPROCESSABLE_ENTITY"
+	case http.StatusTooManyRequests:
+		return "RATE_LIMIT_EXCEEDED"
+	case http.StatusGatewayTimeout:
+		return "REQUEST_TIMEOUT"
+	case http.StatusServiceUnavailable:
+		return "SERVICE_UNAVAILABLE"
+	case http.StatusInternalServerError:
+		return "INTERNAL_SERVER_ERROR"
+	default:
+		if status >= 500 {
+			return "INTERNAL_SERVER_ERROR"
+		}
+		if status >= 400 {
+			return "BAD_REQUEST"
+		}
+		return "UNKNOWN_ERROR"
+	}
 }
 
 // RespondValidationError writes a validation error response

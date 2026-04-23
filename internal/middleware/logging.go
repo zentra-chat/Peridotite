@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"github.com/zentra/peridotite/internal/utils"
 )
 
 type loggingResponseWriter struct {
@@ -106,7 +107,7 @@ func RecoveryMiddleware(next http.Handler) http.Handler {
 					Str("path", r.URL.Path).
 					Msg("Recovered from panic")
 
-				http.Error(w, `{"error":"Internal server error"}`, http.StatusInternalServerError)
+				utils.RespondErrorWithCode(w, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "Internal server error")
 			}
 		}()
 

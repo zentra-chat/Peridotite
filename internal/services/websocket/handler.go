@@ -62,20 +62,20 @@ func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if token == "" {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		utils.RespondErrorWithCode(w, http.StatusUnauthorized, "AUTH_TOKEN_REQUIRED", "Unauthorized")
 		return
 	}
 
 	// Validate JWT token
 	claims, err := auth.ValidateAccessToken(token, h.jwtSecret)
 	if err != nil {
-		http.Error(w, "Invalid token", http.StatusUnauthorized)
+		utils.RespondErrorWithCode(w, http.StatusUnauthorized, "INVALID_TOKEN", "Invalid token")
 		return
 	}
 
 	userID, err := uuid.Parse(claims.UserID)
 	if err != nil {
-		http.Error(w, "Invalid user ID in token", http.StatusUnauthorized)
+		utils.RespondErrorWithCode(w, http.StatusUnauthorized, "INVALID_TOKEN_USER_ID", "Invalid user ID in token")
 		return
 	}
 
