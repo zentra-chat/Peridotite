@@ -374,7 +374,16 @@ func (s *Service) DeleteCategory(ctx context.Context, categoryID, userID uuid.UU
 
 // Channel Permissions
 
-func (s *Service) GetChannelPermissions(ctx context.Context, channelID uuid.UUID) ([]*models.ChannelPermission, error) {
+func (s *Service) GetChannelPermissions(ctx context.Context, channelID, userID uuid.UUID) ([]*models.ChannelPermission, error) {
+	channel, err := s.GetChannel(ctx, channelID)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.requireChannelPermission(ctx, channel.CommunityID, userID, models.PermissionManageChannels); err != nil {
+		return nil, err
+	}
+
 	rows, err := s.db.Query(ctx,
 		`SELECT id, channel_id, target_type, target_id, allow_permissions, deny_permissions
 		FROM channel_permissions WHERE channel_id = $1`,
@@ -385,7 +394,7 @@ func (s *Service) GetChannelPermissions(ctx context.Context, channelID uuid.UUID
 	}
 	defer rows.Close()
 
-	var perms []*models.ChannelPermission
+	perms := make([]*models.ChannelPermission, 0)
 	for rows.Next() {
 		p := &models.ChannelPermission{}
 		err := rows.Scan(&p.ID, &p.ChannelID, &p.TargetType, &p.TargetID, &p.AllowPermissions, &p.DenyPermissions)
@@ -393,6 +402,9 @@ func (s *Service) GetChannelPermissions(ctx context.Context, channelID uuid.UUID
 			return nil, err
 		}
 		perms = append(perms, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
 	return perms, nil

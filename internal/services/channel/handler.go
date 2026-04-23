@@ -393,15 +393,28 @@ func (h *Handler) DeleteCategory(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) GetChannelPermissions(w http.ResponseWriter, r *http.Request) {
+	userID, err := middleware.RequireAuth(r.Context())
+	if err != nil {
+		utils.RespondError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
 	channelID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		utils.RespondError(w, http.StatusBadRequest, "Invalid channel ID")
 		return
 	}
 
-	perms, err := h.service.GetChannelPermissions(r.Context(), channelID)
+	perms, err := h.service.GetChannelPermissions(r.Context(), channelID, userID)
 	if err != nil {
-		utils.RespondError(w, http.StatusInternalServerError, "Failed to get permissions")
+		switch err {
+		case ErrChannelNotFound:
+			utils.RespondError(w, http.StatusNotFound, "Channel not found")
+		case ErrInsufficientPerms:
+			utils.RespondError(w, http.StatusForbidden, "Insufficient permissions")
+		default:
+			utils.RespondError(w, http.StatusInternalServerError, "Failed to get permissions")
+		}
 		return
 	}
 
