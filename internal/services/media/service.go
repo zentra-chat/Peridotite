@@ -20,8 +20,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/minio/minio-go/v7"
 	"github.com/nfnt/resize"
-	"github.com/zentra/peridotite/internal/models"
-	"github.com/zentra/peridotite/internal/services/community"
+	"github.com/zentra/server/internal/models"
+	"github.com/zentra/server/internal/services/community"
 )
 
 var (

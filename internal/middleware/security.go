@@ -3,7 +3,7 @@ package middleware
 import (
 	"net/http"
 
-	"github.com/zentra/peridotite/config"
+	"github.com/zentra/server/config"
 )
 
 // SecurityHeadersMiddleware adds security headers to responses

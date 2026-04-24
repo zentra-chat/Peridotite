@@ -9,9 +9,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
-	"github.com/zentra/peridotite/internal/models"
-	"github.com/zentra/peridotite/internal/services/channel"
-	"github.com/zentra/peridotite/internal/services/user"
+	"github.com/zentra/server/internal/models"
+	"github.com/zentra/server/internal/services/channel"
+	"github.com/zentra/server/internal/services/user"
 )
 
 var (

@@ -15,7 +15,7 @@ import (
 	"golang.org/x/net/html"
 
 	"github.com/rs/zerolog/log"
-	"github.com/zentra/peridotite/internal/models"
+	"github.com/zentra/server/internal/models"
 )
 
 const (

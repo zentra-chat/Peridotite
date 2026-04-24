@@ -23,11 +23,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
-	"github.com/zentra/peridotite/internal/models"
-	"github.com/zentra/peridotite/internal/services/media"
-	"github.com/zentra/peridotite/internal/services/message"
-	"github.com/zentra/peridotite/internal/services/messaging"
-	"github.com/zentra/peridotite/pkg/auth"
+	"github.com/zentra/server/internal/models"
+	"github.com/zentra/server/internal/services/media"
+	"github.com/zentra/server/internal/services/message"
+	"github.com/zentra/server/internal/services/messaging"
+	"github.com/zentra/server/pkg/auth"
 )
 
 const (

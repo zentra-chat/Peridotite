@@ -19,7 +19,7 @@ const (
 var trackedRepos = []string{
 	"zentra-chat/web",
 	"zentra-chat/desktop",
-	"zentra-chat/Peridotite",
+	"zentra-chat/server",
 	"zentra-chat/plugin-template",
 	"zentra-chat/plugin-sdk",
 	"zentra-chat/plugin-marketplace",
@@ -245,7 +245,7 @@ func (s *Service) fetchRepoContributors(ctx context.Context, repo string) ([]rep
 func (s *Service) applyGitHubHeaders(req *http.Request) {
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	req.Header.Set("User-Agent", "zentra-peridotite-github-stats")
+	req.Header.Set("User-Agent", "zentra-server-github-stats")
 	if s.token != "" {
 		req.Header.Set("Authorization", "Bearer "+s.token)
 	}

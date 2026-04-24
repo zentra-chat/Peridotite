@@ -18,7 +18,7 @@ import (
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/rs/zerolog/log"
-	"github.com/zentra/peridotite/config"
+	"github.com/zentra/server/config"
 )
 
 var MinIOClient *minio.Client

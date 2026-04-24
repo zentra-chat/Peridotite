@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"github.com/zentra/peridotite/internal/utils"
-	"github.com/zentra/peridotite/pkg/database"
+	"github.com/zentra/server/internal/utils"
+	"github.com/zentra/server/pkg/database"
 )
 
 // RateLimitMiddleware limits requests per IP or user

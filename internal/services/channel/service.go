@@ -9,10 +9,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/zentra/peridotite/internal/models"
-	"github.com/zentra/peridotite/internal/services/channeltype"
-	"github.com/zentra/peridotite/internal/services/community"
-	"github.com/zentra/peridotite/pkg/database"
+	"github.com/zentra/server/internal/models"
+	"github.com/zentra/server/internal/services/channeltype"
+	"github.com/zentra/server/internal/services/community"
+	"github.com/zentra/server/pkg/database"
 )
 
 var (

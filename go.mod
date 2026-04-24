@@ -1,4 +1,4 @@
-module github.com/zentra/peridotite
+module github.com/zentra/server
 
 go 1.23
 

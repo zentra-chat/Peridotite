@@ -3,7 +3,7 @@ package messaging
 import (
 	"encoding/json"
 
-	"github.com/zentra/peridotite/internal/models"
+	"github.com/zentra/server/internal/models"
 )
 
 func EncodeLinkPreviews(previews []models.LinkPreview) []byte {

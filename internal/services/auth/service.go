@@ -15,8 +15,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
-	"github.com/zentra/peridotite/internal/models"
-	"github.com/zentra/peridotite/pkg/auth"
+	"github.com/zentra/server/internal/models"
+	"github.com/zentra/server/pkg/auth"
 )
 
 var (

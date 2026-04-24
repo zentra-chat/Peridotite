@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/zentra/peridotite/internal/utils"
-	"github.com/zentra/peridotite/pkg/auth"
+	"github.com/zentra/server/internal/utils"
+	"github.com/zentra/server/pkg/auth"
 )
 
 type contextKey string

@@ -5,8 +5,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/zentra/peridotite/internal/middleware"
-	"github.com/zentra/peridotite/internal/utils"
+	"github.com/zentra/server/internal/middleware"
+	"github.com/zentra/server/internal/utils"
 )
 
 type Handler struct {

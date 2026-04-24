@@ -102,7 +102,7 @@ setup:
 
 ## help: Show this help message
 help:
-	@echo "Peridotite - Zentra Backend"
+	@echo "Zentra Server"
 	@echo ""
 	@echo "Usage: make [target]"
 	@echo ""

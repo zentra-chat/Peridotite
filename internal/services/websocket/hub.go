@@ -12,11 +12,11 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
-	"github.com/zentra/peridotite/internal/models"
-	"github.com/zentra/peridotite/internal/services/channel"
-	"github.com/zentra/peridotite/internal/services/dm"
-	"github.com/zentra/peridotite/internal/services/user"
-	"github.com/zentra/peridotite/internal/services/voice"
+	"github.com/zentra/server/internal/models"
+	"github.com/zentra/server/internal/services/channel"
+	"github.com/zentra/server/internal/services/dm"
+	"github.com/zentra/server/internal/services/user"
+	"github.com/zentra/server/internal/services/voice"
 )
 
 // Event types

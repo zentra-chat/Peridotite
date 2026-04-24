@@ -10,7 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-	"github.com/zentra/peridotite/internal/utils"
+	"github.com/zentra/server/internal/utils"
 )
 
 type loggingResponseWriter struct {

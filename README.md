@@ -1,6 +1,6 @@
-# Peridotite - Zentra Backend
+# Zentra Server
 
-Peridotite is the backend server for Zentra, an encrypted community chat application.
+This repo holds the backend server for Zentra, an encrypted community chat application.
 
 ## Tech Stack
 
@@ -23,8 +23,8 @@ Peridotite is the backend server for Zentra, an encrypted community chat applica
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/zentra-chat/peridotite.git
-   cd peridotite
+   git clone https://github.com/zentra-chat/server.git
+   cd server
    ```
 
 2. **Set up environment**

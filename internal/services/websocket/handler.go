@@ -7,9 +7,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/rs/zerolog/log"
-	"github.com/zentra/peridotite/internal/middleware"
-	"github.com/zentra/peridotite/internal/utils"
-	"github.com/zentra/peridotite/pkg/auth"
+	"github.com/zentra/server/internal/middleware"
+	"github.com/zentra/server/internal/utils"
+	"github.com/zentra/server/pkg/auth"
 )
 
 var upgrader = websocket.Upgrader{

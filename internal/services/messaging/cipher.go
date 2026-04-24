@@ -6,7 +6,7 @@ import (
 	"crypto/rand"
 	"io"
 
-	"github.com/zentra/peridotite/pkg/encryption"
+	"github.com/zentra/server/pkg/encryption"
 )
 
 type ContentCipher interface {
